@@ -2,13 +2,16 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="分げつ計数">
 <meta name="theme-color" content="#0e1510">
-<title>分げつ計数（DSR）</title>
+<title>分げつ計数（DSR）v6</title>
 <style>html,body{margin:0;padding:0;background:#0e1510;-webkit-text-size-adjust:100%;}#root{min-height:100vh;}</style>
 </head>
 <body>
@@ -330,6 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
+const VERSION = "v6";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = n => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MAX_TILLERS = 200;
@@ -474,7 +478,7 @@ function invert3(M) {
     Ic = a * e - b * d;
   const det = a * A + b * Bc + c * Cc,
     s = det ? 1 / det : 0;
-  return [A * s, Dc * s, Gc * s, Bc * s, Ec * s, Fc * s, Cc * s, Hc * s, Ic * s];
+  return [A * s, Dc * s, Gc * s, Bc * s, Ec * s, Hc * s, Cc * s, Fc * s, Ic * s];
 }
 function applyM(M, u, v) {
   const X = M[0] * u + M[1] * v + M[2],
@@ -653,7 +657,7 @@ function FramesList({
     className: "page-title"
   }, "枠一覧"), /*#__PURE__*/React.createElement("span", {
     className: "chip-quiet"
-  }, frames.filter(f => f.hasPrep).length, "/", frames.length, " 準備済")), /*#__PURE__*/React.createElement("div", {
+  }, VERSION, " · ", frames.filter(f => f.hasPrep).length, "/", frames.length, " 準備済")), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("label", {
     className: "field-label"
@@ -1504,11 +1508,11 @@ const css = `
 .pt-sel{outline:3px solid var(--amber);outline-offset:1px;}
 .ed-actions{display:flex;gap:8px;}
 
-.stepper{width:58px;height:84px;border-radius:16px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font-size:36px;font-weight:600;cursor:pointer;flex:none;}
-.count-num{font-size:52px;font-weight:800;line-height:1.15;font-variant-numeric:tabular-nums;font-family:ui-monospace,"SF Mono",Menlo,monospace;color:#f4f9f2;text-align:center;padding:2px 0;}
+.stepper{width:54px;height:64px;border-radius:16px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font-size:32px;font-weight:600;cursor:pointer;flex:none;}
+.count-num{font-size:44px;font-weight:800;line-height:1.15;font-variant-numeric:tabular-nums;font-family:ui-monospace,"SF Mono",Menlo,monospace;color:#f4f9f2;text-align:center;padding:2px 0;}
 .count-unit{font-size:12px;color:var(--muted);letter-spacing:.1em;text-align:center;}
 .keypad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
-.keypad.sm .key{height:48px;font-size:22px;}
+.keypad.sm .key{height:44px;font-size:22px;}
 .key{height:54px;border-radius:14px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;cursor:pointer;}
 .key:active{transform:scale(.96);background:var(--panel2);}
 .key-fn{color:var(--muted);font-size:20px;}
@@ -1518,7 +1522,8 @@ const css = `
 .sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
 .sheet-id{font-weight:700;font-variant-numeric:tabular-nums;}
 .sheet-btns{display:flex;gap:8px;}
-.counter-sheet{display:flex;flex-direction:column;gap:12px;}
+.counter-sheet{display:flex;flex-direction:column;gap:10px;}
+.sheet-head,.cs-counter,.keypad,.cs-actions{flex-shrink:0;}
 .cs-counter{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .cs-core{flex:1;}
 .cs-actions{display:grid;grid-template-columns:2fr 1fr;gap:10px;}
