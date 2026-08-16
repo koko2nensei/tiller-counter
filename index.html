@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="分げつ計数">
 <meta name="theme-color" content="#0e1510">
-<title>分げつ計数（DSR）v6</title>
+<title>分げつ計数（DSR）v9</title>
 <style>html,body{margin:0;padding:0;background:#0e1510;-webkit-text-size-adjust:100%;}#root{min-height:100vh;}</style>
 </head>
 <body>
@@ -333,7 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v6";
+const VERSION = "v9";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = n => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MAX_TILLERS = 200;
@@ -513,16 +513,34 @@ function FrameTillerTool() {
       const s = await loadKey(MAIN);
       if (s) {
         setSession(s.session || today());
-        setFrames(s.frames || []);
+        const norm = (Array.isArray(s.frames) ? s.frames : []).map(f => ({
+          num: String(f && f.num != null ? f.num : ""),
+          prepCorners: Array.isArray(f && f.prepCorners) ? f.prepCorners : [],
+          measCorners: Array.isArray(f && f.measCorners) ? f.measCorners : [],
+          points: Array.isArray(f && f.points) ? f.points.filter(p => p && p.id != null) : [],
+          counts: f && f.counts && typeof f.counts === "object" ? f.counts : {},
+          seq: f && f.seq ? f.seq : 1,
+          hasPrep: !!(f && f.hasPrep),
+          hasMeas: !!(f && f.hasMeas)
+        })).filter(f => f.num);
+        setFrames(norm);
       }
       setLoaded(true);
     })();
   }, []);
+  const saveTimer = useRef(null);
   useEffect(() => {
-    if (loaded) saveKey(MAIN, {
-      session,
-      frames
-    });
+    if (!loaded) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveKey(MAIN, {
+        session,
+        frames
+      });
+    }, 400);
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
   }, [loaded, session, frames]);
   const updateFrame = useCallback((num, updater) => {
     setFrames(arr => arr.map(f => f.num === num ? updater(f) : f));
@@ -557,21 +575,21 @@ function FrameTillerTool() {
       const map = new Map(prev.map(f => [f.num, f]));
       for (const inf of obj.frames || []) {
         const cur = map.get(inf.num);
+        const validPts = (inf.points || []).filter(p => Number.isFinite(p.u) && Number.isFinite(p.v));
         if (!cur) {
-          const pts = inf.points || [];
           map.set(inf.num, {
             num: inf.num,
             prepCorners: [],
             measCorners: [],
-            points: pts,
+            points: validPts,
             counts: inf.counts || {},
-            seq: inf.seq || pts.length + 1,
+            seq: inf.seq || validPts.length + 1,
             hasPrep: false,
             hasMeas: false
           });
         } else {
           const pmap = new Map(cur.points.map(p => [p.id, p]));
-          for (const p of inf.points || []) pmap.set(p.id, p);
+          for (const p of validPts) pmap.set(p.id, p);
           const points = Array.from(pmap.values());
           map.set(inf.num, {
             ...cur,
@@ -634,6 +652,82 @@ function newFrame(num) {
     hasPrep: false,
     hasMeas: false
   };
+}
+class ErrorBoundary extends React.Component {
+  constructor(p) {
+    super(p);
+    this.state = {
+      err: null
+    };
+  }
+  static getDerivedStateFromError(err) {
+    return {
+      err
+    };
+  }
+  render() {
+    if (!this.state.err) return this.props.children;
+    const msg = String(this.state.err && this.state.err.message || this.state.err);
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: 20,
+        color: "#eaf2e7",
+        fontFamily: "system-ui,-apple-system,sans-serif",
+        fontSize: 14,
+        lineHeight: 1.7,
+        maxWidth: 480,
+        margin: "0 auto"
+      }
+    }, /*#__PURE__*/React.createElement("h2", {
+      style: {
+        color: "#e2584a",
+        fontSize: 18
+      }
+    }, "表示エラー"), /*#__PURE__*/React.createElement("p", null, "データの読み込みか表示で問題が起きました。下のボタンで保存データを消すと復旧できます（枠・点・写真は消えます。共有ファイルがあれば読み込み直せます）。"), /*#__PURE__*/React.createElement("pre", {
+      style: {
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        background: "#172018",
+        border: "1px solid #2b3a2d",
+        padding: 12,
+        borderRadius: 8,
+        fontSize: 12,
+        color: "#93a795"
+      }
+    }, msg), /*#__PURE__*/React.createElement("button", {
+      onClick: () => {
+        try {
+          indexedDB.deleteDatabase("dsr-tiller-db");
+        } catch (e) {}
+        setTimeout(() => location.reload(), 250);
+      },
+      style: {
+        marginTop: 12,
+        height: 50,
+        padding: "0 20px",
+        border: "none",
+        borderRadius: 12,
+        background: "#74c247",
+        color: "#0c1a08",
+        fontWeight: 700,
+        fontSize: 16,
+        cursor: "pointer"
+      }
+    }, "保存データを消して再読み込み"), /*#__PURE__*/React.createElement("button", {
+      onClick: () => location.reload(),
+      style: {
+        marginLeft: 10,
+        height: 50,
+        padding: "0 18px",
+        border: "1px solid #2b3a2d",
+        borderRadius: 12,
+        background: "transparent",
+        color: "#eaf2e7",
+        fontSize: 15,
+        cursor: "pointer"
+      }
+    }, "消さずに再読み込み"));
+  }
 }
 
 // ── FRAMES LIST ──────────────────────────────────────────────
@@ -756,6 +850,7 @@ function FrameEditor({
   const img = phase === "prep" ? prepImg : measImg;
   const hasImg = phase === "prep" ? frame.hasPrep : frame.hasMeas;
   const cornersDone = corners.length === 4;
+  const dispM = cornersDone ? squareToQuad(corners) : null;
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -826,7 +921,8 @@ function FrameEditor({
     let best = null,
       bestD = 28; // px radius
     for (const p of frame.points) {
-      const fr = uvToFrac(corners, p.u, p.v);
+      if (!Number.isFinite(p.u) || !Number.isFinite(p.v)) continue;
+      const fr = applyM(dispM, p.u, p.v);
       const d = Math.hypot(fr.fx * r.width - tx, fr.fy * r.height - ty);
       if (d < bestD) {
         bestD = d;
@@ -1046,7 +1142,8 @@ function FrameEditor({
       top: `${c.fy * 100}%`
     }
   }, /*#__PURE__*/React.createElement("b", null, i + 1))), cornersDone && frame.points.map((p, i) => {
-    const fr = uvToFrac(corners, p.u, p.v);
+    if (!Number.isFinite(p.u) || !Number.isFinite(p.v)) return null;
+    const fr = applyM(dispM, p.u, p.v);
     const isCounted = frame.counts[p.id] != null;
     const isSel = p.id === sel;
     return /*#__PURE__*/React.createElement("span", {
@@ -1108,6 +1205,7 @@ function CounterSheet({
   onDelete
 }) {
   const [v, setV] = useState(initial);
+  const [confirmDel, setConfirmDel] = useState(false);
   const digit = d => setV(x => Math.min(MAX_TILLERS, x * 10 + d));
   return /*#__PURE__*/React.createElement("div", {
     className: "sheet counter-sheet",
@@ -1156,7 +1254,18 @@ function CounterSheet({
   }, "記録"), /*#__PURE__*/React.createElement("button", {
     className: "btn-ghost",
     onClick: onClose
-  }, "閉じる")));
+  }, "閉じる")), confirmDel ? /*#__PURE__*/React.createElement("div", {
+    className: "cs-del-confirm"
+  }, "この点を削除しますか？", /*#__PURE__*/React.createElement("button", {
+    className: "link-danger",
+    onClick: onDelete
+  }, "削除する"), /*#__PURE__*/React.createElement("button", {
+    className: "link-quiet",
+    onClick: () => setConfirmDel(false)
+  }, "やめる")) : /*#__PURE__*/React.createElement("button", {
+    className: "cs-delete",
+    onClick: () => setConfirmDel(true)
+  }, "この点を削除"));
 }
 
 // ── DATA ─────────────────────────────────────────────────────
@@ -1170,14 +1279,10 @@ function DataView({
   const [pasteText, setPasteText] = useState("");
   const [importMsg, setImportMsg] = useState("");
   const importRef = useRef(null);
-  const allPoints = frames.flatMap(f => f.points.map(p => ({
-    frame: f.num,
-    ...p,
-    rec: f.counts[p.id]
-  })));
-  const counted = allPoints.filter(p => p.rec != null);
-  const vals = counted.map(p => p.rec.tillers);
-  const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+  const totalPoints = frames.reduce((a, f) => a + f.points.length, 0);
+  const totalCounted = frames.reduce((a, f) => a + Object.keys(f.counts).length, 0);
+  const allVals = frames.flatMap(f => Object.values(f.counts).map(c => c.tillers));
+  const mean = allVals.length ? allVals.reduce((a, b) => a + b, 0) / allVals.length : 0;
   const preparedFrames = frames.filter(f => f.hasPrep && f.prepCorners.length === 4).length;
   const doImport = text => {
     const obj = parseProject(text);
@@ -1216,42 +1321,45 @@ function DataView({
     sub: `/ ${frames.length}`
   }), /*#__PURE__*/React.createElement(Stat, {
     label: "計測点",
-    value: `${counted.length}`,
-    sub: `/ ${allPoints.length}`
+    value: `${totalCounted}`,
+    sub: `/ ${totalPoints}`
   }), /*#__PURE__*/React.createElement(Stat, {
     label: "平均分げつ",
-    value: vals.length ? mean.toFixed(1) : "—",
+    value: allVals.length ? mean.toFixed(1) : "—",
     sub: "本"
   })), /*#__PURE__*/React.createElement("div", {
     className: "table-wrap"
   }, /*#__PURE__*/React.createElement("table", {
     className: "tbl"
-  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "枠"), /*#__PURE__*/React.createElement("th", null, "点ID"), /*#__PURE__*/React.createElement("th", {
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "枠"), /*#__PURE__*/React.createElement("th", {
     className: "r"
-  }, "u"), /*#__PURE__*/React.createElement("th", {
+  }, "点数"), /*#__PURE__*/React.createElement("th", {
     className: "r"
-  }, "v"), /*#__PURE__*/React.createElement("th", {
+  }, "計測済"), /*#__PURE__*/React.createElement("th", {
     className: "r"
-  }, "分げつ"))), /*#__PURE__*/React.createElement("tbody", null, allPoints.map(p => /*#__PURE__*/React.createElement("tr", {
-    key: p.id,
-    className: p.rec ? "" : "tr-open"
-  }, /*#__PURE__*/React.createElement("td", null, p.frame), /*#__PURE__*/React.createElement("td", {
-    className: "mono"
-  }, p.id), /*#__PURE__*/React.createElement("td", {
-    className: "r mono"
-  }, p.u.toFixed(3)), /*#__PURE__*/React.createElement("td", {
-    className: "r mono"
-  }, p.v.toFixed(3)), /*#__PURE__*/React.createElement("td", {
-    className: "r mono"
-  }, p.rec ? p.rec.tillers : "—"))), allPoints.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-    colSpan: 5,
-    className: "muted center"
-  }, "まだ点がありません"))))), /*#__PURE__*/React.createElement("p", {
+  }, "平均分げつ"))), /*#__PURE__*/React.createElement("tbody", null, frames.map(f => {
+    const pts = f.points.length;
+    const cnt = Object.keys(f.counts).length;
+    const vals = Object.values(f.counts).map(c => c.tillers);
+    const m = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    return /*#__PURE__*/React.createElement("tr", {
+      key: f.num,
+      className: cnt > 0 ? "" : "tr-open"
+    }, /*#__PURE__*/React.createElement("td", {
+      className: "mono"
+    }, f.num), /*#__PURE__*/React.createElement("td", {
+      className: "r mono"
+    }, pts), /*#__PURE__*/React.createElement("td", {
+      className: "r mono"
+    }, cnt), /*#__PURE__*/React.createElement("td", {
+      className: "r mono"
+    }, m != null ? m.toFixed(1) : "—"));
+  })))), /*#__PURE__*/React.createElement("p", {
     className: "minor-line"
-  }, "u,v は枠内の正規化座標(0–1)。1m枠なら ×100 で cm。左上原点・u→右・v→下。"), /*#__PURE__*/React.createElement("button", {
+  }, "枠ごとの集計です。各点の u,v・分げつ数の明細はCSVに出ます（u,v は枠内正規化座標0–1、1m枠なら×100でcm）。"), /*#__PURE__*/React.createElement("button", {
     className: "btn-primary",
     onClick: () => setExportOpen(true),
-    disabled: allPoints.length === 0
+    disabled: totalPoints === 0
   }, "CSVを書き出す"), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
@@ -1379,7 +1487,7 @@ function buildCsv(session, frames) {
   const rows = [["session", "frame", "point_id", "u", "v", "tiller_count", "recorded_at"]];
   for (const f of frames) for (const p of f.points) {
     const rec = f.counts[p.id];
-    rows.push([session, f.num, p.id, p.u.toFixed(4), p.v.toFixed(4), rec ? rec.tillers : "", rec ? rec.ts : ""].map(esc));
+    rows.push([session, f.num, p.id, Number.isFinite(p.u) ? p.u.toFixed(4) : "", Number.isFinite(p.v) ? p.v.toFixed(4) : "", rec ? rec.tillers : "", rec ? rec.ts : ""].map(esc));
   }
   return rows.map(r => r.join(",")).join("\n");
 }
@@ -1523,7 +1631,9 @@ const css = `
 .sheet-id{font-weight:700;font-variant-numeric:tabular-nums;}
 .sheet-btns{display:flex;gap:8px;}
 .counter-sheet{display:flex;flex-direction:column;gap:10px;}
-.sheet-head,.cs-counter,.keypad,.cs-actions{flex-shrink:0;}
+.sheet-head,.cs-counter,.keypad,.cs-actions,.cs-delete,.cs-del-confirm{flex-shrink:0;}
+.cs-delete{background:none;border:none;color:var(--danger);font-size:13px;cursor:pointer;padding:4px;text-decoration:underline;align-self:center;}
+.cs-del-confirm{display:flex;gap:10px;align-items:center;justify-content:center;color:var(--danger);font-size:13px;flex-wrap:wrap;}
 .cs-counter{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .cs-core{flex:1;}
 .cs-actions{display:grid;grid-template-columns:2fr 1fr;gap:10px;}
@@ -1565,6 +1675,6 @@ const css = `
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}.key:active,.stepper:active{transform:none;}}
 `;
-ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(FrameTillerTool));</script>
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrorBoundary, null, React.createElement(FrameTillerTool)));</script>
 </body>
 </html>
