@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="分げつ計数">
 <meta name="theme-color" content="#0e1510">
-<title>分げつ計数（DSR）v9</title>
+<title>分げつ計数（DSR）v10</title>
 <style>html,body{margin:0;padding:0;background:#0e1510;-webkit-text-size-adjust:100%;}#root{min-height:100vh;}</style>
 </head>
 <body>
@@ -333,7 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v9";
+const VERSION = "v10";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = n => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MAX_TILLERS = 200;
@@ -840,6 +840,7 @@ function FrameEditor({
   const [loadingImg, setLoadingImg] = useState(true);
   const [sel, setSel] = useState(null); // selected point id (meas: opens counter)
   const wrapRef = useRef(null);
+  const screenRef = useRef(null);
   const imgRef = useRef(null);
   const fileRef = useRef(null);
   const fileTarget = useRef(null); // 'prep' | 'meas'
@@ -1064,10 +1065,51 @@ function FrameEditor({
       }
     }));
   };
+  const saveAndNext = (id, tillers) => {
+    updateFrame(num, f => ({
+      ...f,
+      counts: {
+        ...f.counts,
+        [id]: {
+          tillers,
+          ts: stamp()
+        }
+      }
+    }));
+    const ordered = frame.points.filter(p => Number.isFinite(p.u) && Number.isFinite(p.v)).slice().sort((a, b) => a.v - b.v || a.u - b.u);
+    const done = new Set(Object.keys(frame.counts));
+    done.add(id);
+    const next = ordered.find(p => !done.has(p.id));
+    setSel(next ? next.id : null);
+  };
+
+  // keep the selected point visible above the bottom counter sheet
+  useEffect(() => {
+    if (phase !== "meas" || !sel || !cornersDone || !wrapRef.current || !screenRef.current) return;
+    const p = frame.points.find(pt => pt.id === sel);
+    if (!p || !Number.isFinite(p.u) || !Number.isFinite(p.v)) return;
+    const fr = applyM(dispM, p.u, p.v);
+    const wrapRect = wrapRef.current.getBoundingClientRect();
+    const pointY = wrapRect.top + fr.fy * wrapRect.height;
+    const targetY = window.innerHeight * 0.28;
+    const delta = pointY - targetY;
+    if (Math.abs(delta) > 24) {
+      try {
+        screenRef.current.scrollBy({
+          top: delta,
+          behavior: "smooth"
+        });
+      } catch (e) {
+        screenRef.current.scrollTop += delta;
+      }
+    }
+  }, [sel]); // eslint-disable-line
+
   const counted = Object.keys(frame.counts).length;
   const selPoint = frame.points.find(p => p.id === sel);
   return /*#__PURE__*/React.createElement("div", {
-    className: "screen editor"
+    className: "screen editor",
+    ref: screenRef
   }, /*#__PURE__*/React.createElement("input", {
     ref: fileRef,
     type: "file",
@@ -1102,7 +1144,7 @@ function FrameEditor({
     }
   }, "計測（分げつ数）")), /*#__PURE__*/React.createElement("div", {
     className: "guide"
-  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整、タップで選択→削除。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : "点をタップで分げつ数を入力。ズレは点をドラッグで微調整。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
+  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整、タップで選択→削除。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : "点をタップ→数字→「記録して次へ」で自動的に次の株へ。ズレは点をドラッグで微調整。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
     className: "warn"
   }, "準備段階の四隅が未設定です。まず「準備」で四隅と稲位置を登録してください。"), !hasImg ? /*#__PURE__*/React.createElement("button", {
     className: "btn-primary",
@@ -1187,7 +1229,10 @@ function FrameEditor({
     key: selPoint.id,
     point: selPoint,
     initial: frame.counts[selPoint.id]?.tillers ?? 0,
-    onSave: v => {
+    counted: counted,
+    total: frame.points.length,
+    onSaveNext: v => saveAndNext(selPoint.id, v),
+    onSaveClose: v => {
       setCount(selPoint.id, v);
       setSel(null);
     },
@@ -1200,7 +1245,10 @@ function FrameEditor({
 function CounterSheet({
   point,
   initial,
-  onSave,
+  counted,
+  total,
+  onSaveNext,
+  onSaveClose,
   onClose,
   onDelete
 }) {
@@ -1214,7 +1262,9 @@ function CounterSheet({
     className: "sheet-head"
   }, /*#__PURE__*/React.createElement("span", {
     className: "sheet-id"
-  }, "点 ", point.id), /*#__PURE__*/React.createElement("button", {
+  }, "点 ", point.id), /*#__PURE__*/React.createElement("span", {
+    className: "sheet-prog"
+  }, counted, "/", total, " 計測済"), /*#__PURE__*/React.createElement("button", {
     className: "modal-x",
     onClick: onClose
   }, "✕")), /*#__PURE__*/React.createElement("div", {
@@ -1246,26 +1296,28 @@ function CounterSheet({
   }, "0"), /*#__PURE__*/React.createElement("button", {
     className: "key key-fn",
     onClick: () => setV(x => Math.floor(x / 10))
-  }, "⌫")), /*#__PURE__*/React.createElement("div", {
-    className: "cs-actions"
+  }, "⌫")), /*#__PURE__*/React.createElement("button", {
+    className: "btn-record",
+    onClick: () => onSaveNext(v)
+  }, "記録して次へ ", /*#__PURE__*/React.createElement("span", {
+    className: "rec-arrow"
+  }, "→")), /*#__PURE__*/React.createElement("div", {
+    className: "cs-actions2"
   }, /*#__PURE__*/React.createElement("button", {
-    className: "btn-primary",
-    onClick: () => onSave(v)
-  }, "記録"), /*#__PURE__*/React.createElement("button", {
-    className: "btn-ghost",
-    onClick: onClose
-  }, "閉じる")), confirmDel ? /*#__PURE__*/React.createElement("div", {
+    className: "btn-ghost sm",
+    onClick: () => onSaveClose(v)
+  }, "記録して閉じる"), confirmDel ? /*#__PURE__*/React.createElement("span", {
     className: "cs-del-confirm"
-  }, "この点を削除しますか？", /*#__PURE__*/React.createElement("button", {
+  }, "削除？", /*#__PURE__*/React.createElement("button", {
     className: "link-danger",
     onClick: onDelete
-  }, "削除する"), /*#__PURE__*/React.createElement("button", {
+  }, "する"), /*#__PURE__*/React.createElement("button", {
     className: "link-quiet",
     onClick: () => setConfirmDel(false)
   }, "やめる")) : /*#__PURE__*/React.createElement("button", {
     className: "cs-delete",
     onClick: () => setConfirmDel(true)
-  }, "この点を削除"));
+  }, "この点を削除")));
 }
 
 // ── DATA ─────────────────────────────────────────────────────
@@ -1631,9 +1683,11 @@ const css = `
 .sheet-id{font-weight:700;font-variant-numeric:tabular-nums;}
 .sheet-btns{display:flex;gap:8px;}
 .counter-sheet{display:flex;flex-direction:column;gap:10px;}
-.sheet-head,.cs-counter,.keypad,.cs-actions,.cs-delete,.cs-del-confirm{flex-shrink:0;}
+.sheet-head,.cs-counter,.keypad,.cs-actions,.cs-delete,.cs-del-confirm,.btn-record,.cs-actions2{flex-shrink:0;}
+.sheet-prog{margin-left:auto;margin-right:10px;font-size:12px;color:var(--rice);font-variant-numeric:tabular-nums;font-weight:700;}
+.cs-actions2{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .cs-delete{background:none;border:none;color:var(--danger);font-size:13px;cursor:pointer;padding:4px;text-decoration:underline;align-self:center;}
-.cs-del-confirm{display:flex;gap:10px;align-items:center;justify-content:center;color:var(--danger);font-size:13px;flex-wrap:wrap;}
+.cs-del-confirm{display:flex;gap:8px;align-items:center;justify-content:center;color:var(--danger);font-size:13px;flex-wrap:wrap;}
 .cs-counter{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .cs-core{flex:1;}
 .cs-actions{display:grid;grid-template-columns:2fr 1fr;gap:10px;}
