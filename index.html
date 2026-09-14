@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="分げつ計数">
 <meta name="theme-color" content="#0e1510">
-<title>分げつ計数（DSR）v12</title>
+<title>分げつ計数（DSR）v14</title>
 <style>html,body{margin:0;padding:0;background:#0e1510;-webkit-text-size-adjust:100%;}#root{min-height:100vh;}</style>
 </head>
 <body>
@@ -333,7 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v12";
+const VERSION = "v14";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = (n, r) => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_") + "-r" + String(r).replace(/[^A-Za-z0-9._-]/g, "_");
 const roundData = (f, r) => f && f.rounds && f.rounds[r] || {
@@ -725,6 +725,7 @@ function FrameTillerTool() {
     frame: openFrame,
     round: currentRound,
     roundLabel: roundLabel,
+    rounds: rounds,
     onBack: () => setView("frames"),
     updateFrame: updateFrame
   }), view === "data" && /*#__PURE__*/React.createElement(DataView, {
@@ -988,6 +989,7 @@ function FrameEditor({
   frame,
   round,
   roundLabel,
+  rounds,
   onBack,
   updateFrame
 }) {
@@ -1311,6 +1313,17 @@ function FrameEditor({
 
   const counted = Object.keys(rd.counts).length;
   const selPoint = frame.points.find(p => p.id === sel);
+  const prevInfo = pid => {
+    const idx = (rounds || []).findIndex(r => r.id === round);
+    for (let i = idx - 1; i >= 0; i--) {
+      const c = roundData(frame, rounds[i].id).counts[pid];
+      if (c != null) return {
+        tillers: c.tillers,
+        label: rounds[i].label
+      };
+    }
+    return null;
+  };
   return /*#__PURE__*/React.createElement("div", {
     className: "screen editor",
     ref: screenRef
@@ -1350,7 +1363,7 @@ function FrameEditor({
     }
   }, "計測（分げつ数）")), /*#__PURE__*/React.createElement("div", {
     className: "guide"
-  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整、タップで選択→削除。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : "点をタップ→数字→「記録して次へ」で自動的に次の株へ。ズレは点をドラッグで微調整。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
+  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整、タップで選択→削除。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : "点をタップ→数字→「記録して次へ」。橙＝前回値、緑＝今回。ズレは点をドラッグで微調整。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
     className: "warn"
   }, "準備段階の四隅が未設定です。まず「準備」で四隅と稲位置を登録してください。"), !hasImg ? /*#__PURE__*/React.createElement("button", {
     className: "btn-primary",
@@ -1394,14 +1407,31 @@ function FrameEditor({
     const fr = applyM(dispM, p.u, p.v);
     const isCounted = rd.counts[p.id] != null;
     const isSel = p.id === sel;
+    let cls = " pt-prep",
+      label = i + 1;
+    if (phase === "meas") {
+      if (isCounted) {
+        cls = " pt-done";
+        label = rd.counts[p.id].tillers;
+      } else {
+        const pv = prevInfo(p.id);
+        if (pv != null) {
+          cls = " pt-prevval";
+          label = pv.tillers;
+        } else {
+          cls = " pt-open";
+          label = i + 1;
+        }
+      }
+    }
     return /*#__PURE__*/React.createElement("span", {
       key: p.id,
-      className: "pt" + (phase === "meas" ? isCounted ? " pt-done" : " pt-open" : " pt-prep") + (isSel ? " pt-sel" : ""),
+      className: "pt" + cls + (isSel ? " pt-sel" : ""),
       style: {
         left: `${fr.fx * 100}%`,
         top: `${fr.fy * 100}%`
       }
-    }, phase === "meas" && isCounted ? /*#__PURE__*/React.createElement("em", null, rd.counts[p.id].tillers) : /*#__PURE__*/React.createElement("em", null, i + 1));
+    }, /*#__PURE__*/React.createElement("em", null, label));
   }))), /*#__PURE__*/React.createElement("div", {
     className: "ed-rotate"
   }, /*#__PURE__*/React.createElement("span", {
@@ -1449,6 +1479,7 @@ function FrameEditor({
     initial: rd.counts[selPoint.id]?.tillers ?? 0,
     counted: counted,
     total: frame.points.length,
+    prev: prevInfo(selPoint.id),
     onSaveNext: v => saveAndNext(selPoint.id, v),
     onSaveClose: v => {
       setCount(selPoint.id, v);
@@ -1465,6 +1496,7 @@ function CounterSheet({
   initial,
   counted,
   total,
+  prev,
   onSaveNext,
   onSaveClose,
   onClose,
@@ -1485,7 +1517,9 @@ function CounterSheet({
   }, counted, "/", total, " 計測済"), /*#__PURE__*/React.createElement("button", {
     className: "modal-x",
     onClick: onClose
-  }, "✕")), /*#__PURE__*/React.createElement("div", {
+  }, "✕")), prev != null && /*#__PURE__*/React.createElement("div", {
+    className: "cs-prev"
+  }, "前回（", prev.label, "）: ", /*#__PURE__*/React.createElement("b", null, prev.tillers), " 本"), /*#__PURE__*/React.createElement("div", {
     className: "cs-counter"
   }, /*#__PURE__*/React.createElement("button", {
     className: "stepper minus",
@@ -1912,6 +1946,7 @@ const css = `
 .pt em{font-style:normal;font-size:11px;font-weight:700;}
 .pt-prep{background:rgba(227,169,47,.35);border-color:var(--amber);color:#fff;}
 .pt-open{background:rgba(147,167,149,.25);border-color:#cfe;color:#fff;}
+.pt-prevval{background:rgba(227,169,47,.35);border-color:var(--amber);color:#fff;}
 .pt-done{background:rgba(116,194,71,.9);border-color:#dfffce;color:#0c1a08;}
 .pt-sel{outline:3px solid var(--amber);outline-offset:1px;}
 .ed-actions{display:flex;gap:8px;}
@@ -1935,7 +1970,9 @@ const css = `
 .sheet-id{font-weight:700;font-variant-numeric:tabular-nums;}
 .sheet-btns{display:flex;gap:8px;}
 .counter-sheet{display:flex;flex-direction:column;gap:10px;}
-.sheet-head,.cs-counter,.keypad,.cs-actions,.cs-delete,.cs-del-confirm,.btn-record,.cs-actions2{flex-shrink:0;}
+.sheet-head,.cs-counter,.keypad,.cs-actions,.cs-delete,.cs-del-confirm,.btn-record,.cs-actions2,.cs-prev{flex-shrink:0;}
+.cs-prev{text-align:center;font-size:13px;color:var(--amber);background:rgba(227,169,47,.10);border:1px solid rgba(227,169,47,.3);border-radius:8px;padding:6px;}
+.cs-prev b{font-variant-numeric:tabular-nums;font-size:15px;}
 .sheet-prog{margin-left:auto;margin-right:10px;font-size:12px;color:var(--rice);font-variant-numeric:tabular-nums;font-weight:700;}
 .cs-actions2{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .cs-delete{background:none;border:none;color:var(--danger);font-size:13px;cursor:pointer;padding:4px;text-decoration:underline;align-self:center;}
