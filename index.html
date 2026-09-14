@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="分げつ計数">
 <meta name="theme-color" content="#0e1510">
-<title>分げつ計数（DSR）v11</title>
+<title>分げつ計数（DSR）v12</title>
 <style>html,body{margin:0;padding:0;background:#0e1510;-webkit-text-size-adjust:100%;}#root{min-height:100vh;}</style>
 </head>
 <body>
@@ -333,9 +333,14 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v11";
+const VERSION = "v12";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
-const MEAS = n => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
+const MEAS = (n, r) => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_") + "-r" + String(r).replace(/[^A-Za-z0-9._-]/g, "_");
+const roundData = (f, r) => f && f.rounds && f.rounds[r] || {
+  measCorners: [],
+  counts: {},
+  hasMeas: false
+};
 const MAX_TILLERS = 200;
 const CORNER_LABELS = ["左上", "右上", "右下", "左下"];
 function idbOpen() {
@@ -526,7 +531,12 @@ function uvToFrac(corners, u, v) {
 function FrameTillerTool() {
   const [loaded, setLoaded] = useState(false);
   const [session, setSession] = useState(today());
-  const [frames, setFrames] = useState([]); // [{num, prepCorners, measCorners, points:[{id,u,v}], counts:{}, seq, hasPrep, hasMeas}]
+  const [frames, setFrames] = useState([]);
+  const [rounds, setRounds] = useState([{
+    id: "1",
+    label: "1回目"
+  }]);
+  const [currentRound, setCurrentRound] = useState("1");
   const [view, setView] = useState("frames"); // frames | editor | data
   const [openNum, setOpenNum] = useState(null);
   useEffect(() => {
@@ -534,17 +544,35 @@ function FrameTillerTool() {
       const s = await loadKey(MAIN);
       if (s) {
         setSession(s.session || today());
-        const norm = (Array.isArray(s.frames) ? s.frames : []).map(f => ({
-          num: String(f && f.num != null ? f.num : ""),
-          prepCorners: Array.isArray(f && f.prepCorners) ? f.prepCorners : [],
-          measCorners: Array.isArray(f && f.measCorners) ? f.measCorners : [],
-          points: Array.isArray(f && f.points) ? f.points.filter(p => p && p.id != null) : [],
-          counts: f && f.counts && typeof f.counts === "object" ? f.counts : {},
-          seq: f && f.seq ? f.seq : 1,
-          hasPrep: !!(f && f.hasPrep),
-          hasMeas: !!(f && f.hasMeas)
-        })).filter(f => f.num);
+        const norm = (Array.isArray(s.frames) ? s.frames : []).map(f => {
+          const points = Array.isArray(f && f.points) ? f.points.filter(p => p && p.id != null && Number.isFinite(p.u) && Number.isFinite(p.v)) : [];
+          let roundsObj = f && f.rounds && typeof f.rounds === "object" ? f.rounds : null;
+          if (!roundsObj) {
+            // legacy flat counts -> round "1"
+            roundsObj = {
+              "1": {
+                measCorners: [],
+                counts: f && f.counts && typeof f.counts === "object" ? f.counts : {},
+                hasMeas: false
+              }
+            };
+          }
+          return {
+            num: String(f && f.num != null ? f.num : ""),
+            prepCorners: Array.isArray(f && f.prepCorners) ? f.prepCorners : [],
+            points,
+            seq: f && f.seq ? f.seq : points.length + 1,
+            hasPrep: !!(f && f.hasPrep),
+            rounds: roundsObj
+          };
+        }).filter(f => f.num);
         setFrames(norm);
+        const rs = Array.isArray(s.rounds) && s.rounds.length ? s.rounds : [{
+          id: "1",
+          label: "1回目"
+        }];
+        setRounds(rs);
+        setCurrentRound(s.currentRound && rs.some(r => r.id === s.currentRound) ? s.currentRound : rs[rs.length - 1].id);
       }
       setLoaded(true);
     })();
@@ -556,13 +584,15 @@ function FrameTillerTool() {
     saveTimer.current = setTimeout(() => {
       saveKey(MAIN, {
         session,
-        frames
+        frames,
+        rounds,
+        currentRound
       });
     }, 400);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [loaded, session, frames]);
+  }, [loaded, session, frames, rounds, currentRound]);
   const updateFrame = useCallback((num, updater) => {
     setFrames(arr => arr.map(f => f.num === num ? updater(f) : f));
   }, []);
@@ -579,10 +609,33 @@ function FrameTillerTool() {
   };
   const removeFrame = num => {
     delKey(PREP(num));
-    delKey(MEAS(num));
+    rounds.forEach(r => delKey(MEAS(num, r.id)));
     setFrames(a => a.filter(f => f.num !== num));
   };
+  const addRound = label => {
+    const id = String(Math.max(0, ...rounds.map(r => parseInt(r.id, 10) || 0)) + 1);
+    const lb = label && label.trim() || `${id}回目 (${today()})`;
+    setRounds(rs => [...rs, {
+      id,
+      label: lb
+    }]);
+    setCurrentRound(id);
+  };
+  const renameRound = (id, label) => setRounds(rs => rs.map(r => r.id === id ? {
+    ...r,
+    label
+  } : r));
   const importData = useCallback(obj => {
+    if (Array.isArray(obj.rounds) && obj.rounds.length) {
+      setRounds(rs => {
+        const m = new Map(rs.map(r => [r.id, r]));
+        for (const r of obj.rounds) if (r && r.id != null) m.set(String(r.id), {
+          id: String(r.id),
+          label: r.label || String(r.id)
+        });
+        return Array.from(m.values());
+      });
+    }
     const mergeCounts = (a, b) => {
       const o = {
         ...(a || {})
@@ -595,28 +648,51 @@ function FrameTillerTool() {
     setFrames(prev => {
       const map = new Map(prev.map(f => [f.num, f]));
       for (const inf of obj.frames || []) {
-        const cur = map.get(inf.num);
         const validPts = (inf.points || []).filter(p => Number.isFinite(p.u) && Number.isFinite(p.v));
+        const inRounds = inf.rounds && typeof inf.rounds === "object" ? inf.rounds : {
+          "1": {
+            counts: inf.counts || {}
+          }
+        };
+        const cur = map.get(inf.num);
         if (!cur) {
+          const r2 = {};
+          for (const [rid, rd] of Object.entries(inRounds)) r2[rid] = {
+            measCorners: [],
+            counts: rd.counts || {},
+            hasMeas: false
+          };
           map.set(inf.num, {
             num: inf.num,
             prepCorners: [],
-            measCorners: [],
             points: validPts,
-            counts: inf.counts || {},
             seq: inf.seq || validPts.length + 1,
             hasPrep: false,
-            hasMeas: false
+            rounds: r2
           });
         } else {
           const pmap = new Map(cur.points.map(p => [p.id, p]));
           for (const p of validPts) pmap.set(p.id, p);
           const points = Array.from(pmap.values());
+          const r2 = {
+            ...(cur.rounds || {})
+          };
+          for (const [rid, rd] of Object.entries(inRounds)) {
+            const base = r2[rid] || {
+              measCorners: [],
+              counts: {},
+              hasMeas: false
+            };
+            r2[rid] = {
+              ...base,
+              counts: mergeCounts(base.counts, rd.counts)
+            };
+          }
           map.set(inf.num, {
             ...cur,
             points,
-            counts: mergeCounts(cur.counts, inf.counts),
-            seq: Math.max(cur.seq || 1, inf.seq || 1, points.length + 1)
+            seq: Math.max(cur.seq || 1, inf.seq || 1, points.length + 1),
+            rounds: r2
           });
         }
       }
@@ -624,6 +700,7 @@ function FrameTillerTool() {
     });
   }, []);
   const openFrame = frames.find(f => f.num === openNum);
+  const roundLabel = (rounds.find(r => r.id === currentRound) || {}).label || currentRound;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("style", null, css), /*#__PURE__*/React.createElement("div", {
     className: "app"
   }, /*#__PURE__*/React.createElement("div", {
@@ -632,6 +709,11 @@ function FrameTillerTool() {
     session: session,
     setSession: setSession,
     frames: frames,
+    rounds: rounds,
+    currentRound: currentRound,
+    setCurrentRound: setCurrentRound,
+    onAddRound: addRound,
+    onRenameRound: renameRound,
     onOpen: n => {
       setOpenNum(n);
       setView("editor");
@@ -641,11 +723,14 @@ function FrameTillerTool() {
     onRemove: removeFrame
   }), view === "editor" && openFrame && /*#__PURE__*/React.createElement(FrameEditor, {
     frame: openFrame,
+    round: currentRound,
+    roundLabel: roundLabel,
     onBack: () => setView("frames"),
     updateFrame: updateFrame
   }), view === "data" && /*#__PURE__*/React.createElement(DataView, {
     session: session,
     frames: frames,
+    rounds: rounds,
     onImport: importData
   }), /*#__PURE__*/React.createElement("nav", {
     className: "tabs"
@@ -666,12 +751,10 @@ function newFrame(num) {
   return {
     num,
     prepCorners: [],
-    measCorners: [],
     points: [],
-    counts: {},
     seq: 1,
     hasPrep: false,
-    hasMeas: false
+    rounds: {}
   };
 }
 class ErrorBoundary extends React.Component {
@@ -756,6 +839,11 @@ function FramesList({
   session,
   setSession,
   frames,
+  rounds,
+  currentRound,
+  setCurrentRound,
+  onAddRound,
+  onRenameRound,
   onOpen,
   onSeed,
   onAdd,
@@ -764,6 +852,11 @@ function FramesList({
   const [seedN, setSeedN] = useState("23");
   const [newNum, setNewNum] = useState("");
   const [confirmSeed, setConfirmSeed] = useState(false);
+  const [newRoundLabel, setNewRoundLabel] = useState("");
+  const [addingRound, setAddingRound] = useState(false);
+  const curLabel = (rounds.find(r => r.id === currentRound) || {}).label || currentRound;
+  const roundMeasured = frames.reduce((a, f) => a + Object.keys(roundData(f, currentRound).counts).length, 0);
+  const totalPts = frames.reduce((a, f) => a + f.points.length, 0);
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
   }, /*#__PURE__*/React.createElement("header", {
@@ -781,7 +874,48 @@ function FramesList({
     value: session,
     onChange: e => setSession(e.target.value),
     placeholder: "例: 田無 にじのきらめき 2026"
-  })), frames.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "card-title"
+  }, "測定回 ", /*#__PURE__*/React.createElement("span", {
+    className: "card-sub"
+  }, roundMeasured, "/", totalPts, " 計測（この回）")), /*#__PURE__*/React.createElement("div", {
+    className: "round-row"
+  }, rounds.map(r => /*#__PURE__*/React.createElement("button", {
+    key: r.id,
+    className: "round-chip" + (r.id === currentRound ? " on" : ""),
+    onClick: () => setCurrentRound(r.id)
+  }, r.label))), addingRound ? /*#__PURE__*/React.createElement("div", {
+    className: "inline-row"
+  }, /*#__PURE__*/React.createElement("input", {
+    className: "input flex",
+    value: newRoundLabel,
+    onChange: e => setNewRoundLabel(e.target.value),
+    placeholder: `例: 2回目 ${today()}`
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "btn-primary auto",
+    onClick: () => {
+      onAddRound(newRoundLabel);
+      setNewRoundLabel("");
+      setAddingRound(false);
+    }
+  }, "作成"), /*#__PURE__*/React.createElement("button", {
+    className: "btn-ghost auto",
+    onClick: () => setAddingRound(false)
+  }, "やめる")) : /*#__PURE__*/React.createElement("div", {
+    className: "inline-row"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn-ghost",
+    onClick: () => setAddingRound(true)
+  }, "＋ 新しい測定回"), /*#__PURE__*/React.createElement("input", {
+    className: "input flex",
+    value: curLabel,
+    onChange: e => onRenameRound(currentRound, e.target.value),
+    placeholder: "この回の名前"
+  })), /*#__PURE__*/React.createElement("p", {
+    className: "hint"
+  }, "「新しい測定回」を作ると、点はそのままで測定写真・四隅・分げつ数だけ新しく記録できます（2週間おきの2回目・3回目…）。選んだ回で全枠を計測します。")), frames.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "card-title"
@@ -802,7 +936,7 @@ function FramesList({
     className: "frame-grid"
   }, frames.map(f => {
     const total = f.points.length;
-    const counted = Object.keys(f.counts).length;
+    const counted = Object.keys(roundData(f, currentRound).counts).length;
     return /*#__PURE__*/React.createElement("li", {
       key: f.num
     }, /*#__PURE__*/React.createElement("button", {
@@ -852,6 +986,8 @@ function FramesList({
 // ── FRAME EDITOR ─────────────────────────────────────────────
 function FrameEditor({
   frame,
+  round,
+  roundLabel,
   onBack,
   updateFrame
 }) {
@@ -868,11 +1004,25 @@ function FrameEditor({
   const gest = useRef(null); // active pointer gesture
 
   const num = frame.num;
-  const corners = phase === "prep" ? frame.prepCorners : frame.measCorners;
+  const rd = roundData(frame, round);
+  const corners = phase === "prep" ? frame.prepCorners : rd.measCorners;
   const img = phase === "prep" ? prepImg : measImg;
-  const hasImg = phase === "prep" ? frame.hasPrep : frame.hasMeas;
+  const hasImg = phase === "prep" ? frame.hasPrep : rd.hasMeas;
   const cornersDone = corners.length === 4;
   const dispM = cornersDone ? squareToQuad(corners) : null;
+  const updRound = (f, patch) => ({
+    ...f,
+    rounds: {
+      ...f.rounds,
+      [round]: {
+        ...roundData(f, round),
+        ...patch
+      }
+    }
+  });
+  useEffect(() => {
+    setMeasImg(null);
+  }, [round]);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -883,8 +1033,8 @@ function FrameEditor({
           if (alive) setPrepImg(s);
         }
       } else {
-        if (frame.hasMeas && measImg == null) {
-          const s = await getPhotoStr(MEAS(num));
+        if (rd.hasMeas && measImg == null) {
+          const s = await getPhotoStr(MEAS(num, round));
           if (alive) setMeasImg(s);
         }
       }
@@ -893,7 +1043,7 @@ function FrameEditor({
     return () => {
       alive = false;
     };
-  }, [phase, num, frame.hasPrep, frame.hasMeas]); // eslint-disable-line
+  }, [phase, num, round, frame.hasPrep, rd.hasMeas]); // eslint-disable-line
 
   const pickPhoto = target => {
     fileTarget.current = target;
@@ -917,10 +1067,9 @@ function FrameEditor({
         prepCorners: []
       }));
     } else {
-      await savePhotoStr(MEAS(num), dataUrl);
+      await savePhotoStr(MEAS(num, round), dataUrl);
       setMeasImg(dataUrl);
-      updateFrame(num, f => ({
-        ...f,
+      updateFrame(num, f => updRound(f, {
         hasMeas: true,
         measCorners: []
       }));
@@ -941,10 +1090,9 @@ function FrameEditor({
           prepCorners: []
         }));
       } else {
-        await savePhotoStr(MEAS(num), rotated);
+        await savePhotoStr(MEAS(num, round), rotated);
         setMeasImg(rotated);
-        updateFrame(num, f => ({
-          ...f,
+        updateFrame(num, f => updRound(f, {
           measCorners: []
         }));
       }
@@ -1036,10 +1184,14 @@ function FrameEditor({
         fx,
         fy
       } = frac(e);
-      const key = phase === "prep" ? "prepCorners" : "measCorners";
-      updateFrame(num, f => ({
+      if (phase === "prep") updateFrame(num, f => ({
         ...f,
-        [key]: [...f[key], {
+        prepCorners: [...f.prepCorners, {
+          fx,
+          fy
+        }]
+      }));else updateFrame(num, f => updRound(f, {
+        measCorners: [...roundData(f, round).measCorners, {
           fx,
           fy
         }]
@@ -1070,39 +1222,47 @@ function FrameEditor({
     gest.current = null;
   };
   const resetCorners = () => {
-    const key = phase === "prep" ? "prepCorners" : "measCorners";
-    updateFrame(num, f => ({
+    if (phase === "prep") updateFrame(num, f => ({
       ...f,
-      [key]: []
+      prepCorners: []
+    }));else updateFrame(num, f => updRound(f, {
+      measCorners: []
     }));
     setSel(null);
   };
   const undoCorner = () => {
-    const key = phase === "prep" ? "prepCorners" : "measCorners";
-    updateFrame(num, f => ({
+    if (phase === "prep") updateFrame(num, f => ({
       ...f,
-      [key]: f[key].slice(0, -1)
+      prepCorners: f.prepCorners.slice(0, -1)
+    }));else updateFrame(num, f => updRound(f, {
+      measCorners: roundData(f, round).measCorners.slice(0, -1)
     }));
   };
   const deletePoint = id => {
     updateFrame(num, f => {
-      const counts = {
-        ...f.counts
-      };
-      delete counts[id];
+      const rounds = {};
+      for (const [rid, r] of Object.entries(f.rounds || {})) {
+        const c = {
+          ...r.counts
+        };
+        delete c[id];
+        rounds[rid] = {
+          ...r,
+          counts: c
+        };
+      }
       return {
         ...f,
         points: f.points.filter(p => p.id !== id),
-        counts
+        rounds
       };
     });
     setSel(null);
   };
   const setCount = (id, tillers) => {
-    updateFrame(num, f => ({
-      ...f,
+    updateFrame(num, f => updRound(f, {
       counts: {
-        ...f.counts,
+        ...roundData(f, round).counts,
         [id]: {
           tillers,
           ts: stamp()
@@ -1111,10 +1271,9 @@ function FrameEditor({
     }));
   };
   const saveAndNext = (id, tillers) => {
-    updateFrame(num, f => ({
-      ...f,
+    updateFrame(num, f => updRound(f, {
       counts: {
-        ...f.counts,
+        ...roundData(f, round).counts,
         [id]: {
           tillers,
           ts: stamp()
@@ -1122,7 +1281,7 @@ function FrameEditor({
       }
     }));
     const ordered = frame.points.filter(p => Number.isFinite(p.u) && Number.isFinite(p.v)).slice().sort((a, b) => a.v - b.v || a.u - b.u);
-    const done = new Set(Object.keys(frame.counts));
+    const done = new Set(Object.keys(rd.counts));
     done.add(id);
     const next = ordered.find(p => !done.has(p.id));
     setSel(next ? next.id : null);
@@ -1150,7 +1309,7 @@ function FrameEditor({
     }
   }, [sel]); // eslint-disable-line
 
-  const counted = Object.keys(frame.counts).length;
+  const counted = Object.keys(rd.counts).length;
   const selPoint = frame.points.find(p => p.id === sel);
   return /*#__PURE__*/React.createElement("div", {
     className: "screen editor",
@@ -1171,7 +1330,9 @@ function FrameEditor({
     "aria-label": "戻る"
   }, "‹ 枠一覧"), /*#__PURE__*/React.createElement("div", {
     className: "ed-title"
-  }, "枠 ", num), /*#__PURE__*/React.createElement("div", {
+  }, "枠 ", num, phase === "meas" && /*#__PURE__*/React.createElement("span", {
+    className: "ed-round"
+  }, roundLabel)), /*#__PURE__*/React.createElement("div", {
     className: "ed-prog"
   }, phase === "meas" ? `${counted}/${frame.points.length}` : `${frame.points.length}点`)), /*#__PURE__*/React.createElement("div", {
     className: "seg"
@@ -1231,7 +1392,7 @@ function FrameEditor({
   }, /*#__PURE__*/React.createElement("b", null, i + 1))), cornersDone && frame.points.map((p, i) => {
     if (!Number.isFinite(p.u) || !Number.isFinite(p.v)) return null;
     const fr = applyM(dispM, p.u, p.v);
-    const isCounted = frame.counts[p.id] != null;
+    const isCounted = rd.counts[p.id] != null;
     const isSel = p.id === sel;
     return /*#__PURE__*/React.createElement("span", {
       key: p.id,
@@ -1240,7 +1401,7 @@ function FrameEditor({
         left: `${fr.fx * 100}%`,
         top: `${fr.fy * 100}%`
       }
-    }, phase === "meas" && isCounted ? /*#__PURE__*/React.createElement("em", null, frame.counts[p.id].tillers) : /*#__PURE__*/React.createElement("em", null, i + 1));
+    }, phase === "meas" && isCounted ? /*#__PURE__*/React.createElement("em", null, rd.counts[p.id].tillers) : /*#__PURE__*/React.createElement("em", null, i + 1));
   }))), /*#__PURE__*/React.createElement("div", {
     className: "ed-rotate"
   }, /*#__PURE__*/React.createElement("span", {
@@ -1285,7 +1446,7 @@ function FrameEditor({
   }, "閉じる")))), phase === "meas" && selPoint && /*#__PURE__*/React.createElement(CounterSheet, {
     key: selPoint.id,
     point: selPoint,
-    initial: frame.counts[selPoint.id]?.tillers ?? 0,
+    initial: rd.counts[selPoint.id]?.tillers ?? 0,
     counted: counted,
     total: frame.points.length,
     onSaveNext: v => saveAndNext(selPoint.id, v),
@@ -1381,17 +1542,20 @@ function CounterSheet({
 function DataView({
   session,
   frames,
+  rounds,
   onImport
 }) {
   const [exportOpen, setExportOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [importMsg, setImportMsg] = useState("");
+  const [viewRound, setViewRound] = useState((rounds[rounds.length - 1] || {}).id || "1");
   const importRef = useRef(null);
+  const vr = rounds.some(r => r.id === viewRound) ? viewRound : (rounds[rounds.length - 1] || {}).id || "1";
   const totalPoints = frames.reduce((a, f) => a + f.points.length, 0);
-  const totalCounted = frames.reduce((a, f) => a + Object.keys(f.counts).length, 0);
-  const allVals = frames.flatMap(f => Object.values(f.counts).map(c => c.tillers));
-  const mean = allVals.length ? allVals.reduce((a, b) => a + b, 0) / allVals.length : 0;
+  const vals = frames.flatMap(f => Object.values(roundData(f, vr).counts).map(c => c.tillers));
+  const counted = vals.length;
+  const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
   const preparedFrames = frames.filter(f => f.hasPrep && f.prepCorners.length === 4).length;
   const doImport = text => {
     const obj = parseProject(text);
@@ -1401,7 +1565,12 @@ function DataView({
     }
     const nf = obj.frames || [];
     const np = nf.reduce((a, f) => a + (f.points ? f.points.length : 0), 0);
-    const nc = nf.reduce((a, f) => a + (f.counts ? Object.keys(f.counts).length : 0), 0);
+    let nc = 0;
+    for (const f of nf) {
+      if (f.rounds) {
+        for (const rd of Object.values(f.rounds)) nc += Object.keys(rd.counts || {}).length;
+      } else if (f.counts) nc += Object.keys(f.counts).length;
+    }
     onImport(obj);
     setImportMsg(`${nf.length}枠・${np}点・${nc}計測をマージしました。`);
     setPasteText("");
@@ -1423,18 +1592,24 @@ function DataView({
   }, "データ"), /*#__PURE__*/React.createElement("span", {
     className: "chip-quiet"
   }, session)), /*#__PURE__*/React.createElement("div", {
+    className: "round-row"
+  }, rounds.map(r => /*#__PURE__*/React.createElement("button", {
+    key: r.id,
+    className: "round-chip" + (r.id === vr ? " on" : ""),
+    onClick: () => setViewRound(r.id)
+  }, r.label))), /*#__PURE__*/React.createElement("div", {
     className: "stats"
   }, /*#__PURE__*/React.createElement(Stat, {
     label: "準備済 枠",
     value: `${preparedFrames}`,
     sub: `/ ${frames.length}`
   }), /*#__PURE__*/React.createElement(Stat, {
-    label: "計測点",
-    value: `${totalCounted}`,
+    label: "計測点(この回)",
+    value: `${counted}`,
     sub: `/ ${totalPoints}`
   }), /*#__PURE__*/React.createElement(Stat, {
     label: "平均分げつ",
-    value: allVals.length ? mean.toFixed(1) : "—",
+    value: vals.length ? mean.toFixed(1) : "—",
     sub: "本"
   })), /*#__PURE__*/React.createElement("div", {
     className: "table-wrap"
@@ -1446,11 +1621,12 @@ function DataView({
     className: "r"
   }, "計測済"), /*#__PURE__*/React.createElement("th", {
     className: "r"
-  }, "平均分げつ"))), /*#__PURE__*/React.createElement("tbody", null, frames.map(f => {
+  }, "平均"))), /*#__PURE__*/React.createElement("tbody", null, frames.map(f => {
     const pts = f.points.length;
-    const cnt = Object.keys(f.counts).length;
-    const vals = Object.values(f.counts).map(c => c.tillers);
-    const m = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    const c = roundData(f, vr).counts;
+    const cnt = Object.keys(c).length;
+    const cv = Object.values(c).map(x => x.tillers);
+    const m = cv.length ? cv.reduce((a, b) => a + b, 0) / cv.length : null;
     return /*#__PURE__*/React.createElement("tr", {
       key: f.num,
       className: cnt > 0 ? "" : "tr-open"
@@ -1465,17 +1641,17 @@ function DataView({
     }, m != null ? m.toFixed(1) : "—"));
   })))), /*#__PURE__*/React.createElement("p", {
     className: "minor-line"
-  }, "枠ごとの集計です。各点の u,v・分げつ数の明細はCSVに出ます（u,v は枠内正規化座標0–1、1m枠なら×100でcm）。"), /*#__PURE__*/React.createElement("button", {
+  }, "表は選択中の測定回の集計です。CSVには全測定回の各点データ（1行＝1点×1回の long 形式）が出ます。"), /*#__PURE__*/React.createElement("button", {
     className: "btn-primary",
     onClick: () => setExportOpen(true),
     disabled: totalPoints === 0
-  }, "CSVを書き出す"), /*#__PURE__*/React.createElement("div", {
+  }, "CSVを書き出す（全回）"), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "card-title"
   }, "PC ↔ スマホ 共有"), /*#__PURE__*/React.createElement("p", {
     className: "hint"
-  }, "「共有ファイルを書き出す」でJSONを保存し、AirDropやメール等で相手端末へ。相手端末で読み込むと 枠・点・分げつ数 がマージされます（写真は各端末で保持）。準備をPCで、計測をスマホで、が便利です。"), /*#__PURE__*/React.createElement("button", {
+  }, "「共有ファイルを書き出す」でJSONを保存し、AirDropやメール等で相手端末へ。相手端末で読み込むと 枠・点・全測定回の分げつ数 がマージされます（写真は各端末で保持）。準備をPCで、計測をスマホで、が便利です。"), /*#__PURE__*/React.createElement("button", {
     className: "btn-primary",
     onClick: () => setShareOpen(true),
     disabled: frames.length === 0
@@ -1502,16 +1678,16 @@ function DataView({
   }, "貼り付けから読み込む"), importMsg && /*#__PURE__*/React.createElement("div", {
     className: "import-msg"
   }, importMsg)), exportOpen && /*#__PURE__*/React.createElement(ExportModal, {
-    text: buildCsv(session, frames),
-    title: "CSV書き出し",
-    note: "列: session, frame, point_id, u, v, tiller_count, recorded_at。point_id / u,v でD0側と結合できます。",
+    text: buildCsv(session, frames, rounds),
+    title: "CSV書き出し（全測定回）",
+    note: "列: session, frame, point_id, u, v, round, round_label, tiller_count, recorded_at。1行＝1点×1測定回。",
     filename: `tiller_${today()}.csv`,
     mime: "text/csv",
     onClose: () => setExportOpen(false)
   }), shareOpen && /*#__PURE__*/React.createElement(ExportModal, {
-    text: buildProject(session, frames),
+    text: buildProject(session, frames, rounds),
     title: "共有ファイル（PC↔スマホ）",
-    note: "枠・点・分げつ数を含みます（写真は含まれません）。相手端末の『読み込み』でマージされます。",
+    note: "枠・点・全測定回の分げつ数を含みます（写真は含まれません）。相手端末の『読み込み』でマージされます。",
     filename: `tiller_project_${today()}.json`,
     mime: "application/json",
     onClose: () => setShareOpen(false)
@@ -1588,29 +1764,39 @@ function ExportModal({
     onClick: download
   }, "ダウンロード"))));
 }
-function buildCsv(session, frames) {
+function buildCsv(session, frames, rounds) {
   const esc = v => {
     const s = String(v ?? "");
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const rows = [["session", "frame", "point_id", "u", "v", "tiller_count", "recorded_at"]];
+  const rlabel = {};
+  (rounds || []).forEach(r => {
+    rlabel[r.id] = r.label;
+  });
+  const rows = [["session", "frame", "point_id", "u", "v", "round", "round_label", "tiller_count", "recorded_at"]];
   for (const f of frames) for (const p of f.points) {
-    const rec = f.counts[p.id];
-    rows.push([session, f.num, p.id, Number.isFinite(p.u) ? p.u.toFixed(4) : "", Number.isFinite(p.v) ? p.v.toFixed(4) : "", rec ? rec.tillers : "", rec ? rec.ts : ""].map(esc));
+    for (const [rid, rd] of Object.entries(f.rounds || {})) {
+      const rec = rd.counts[p.id];
+      if (!rec) continue;
+      rows.push([session, f.num, p.id, Number.isFinite(p.u) ? p.u.toFixed(4) : "", Number.isFinite(p.v) ? p.v.toFixed(4) : "", rid, rlabel[rid] || rid, rec.tillers, rec.ts].map(esc));
+    }
   }
   return rows.map(r => r.join(",")).join("\n");
 }
-function buildProject(session, frames) {
+function buildProject(session, frames, rounds) {
   return JSON.stringify({
     type: "dsr-tiller-export",
-    version: 1,
+    version: 2,
     session,
     exportedAt: stamp(),
+    rounds,
     frames: frames.map(f => ({
       num: f.num,
       points: f.points,
-      counts: f.counts,
-      seq: f.seq
+      seq: f.seq,
+      rounds: Object.fromEntries(Object.entries(f.rounds || {}).map(([rid, rd]) => [rid, {
+        counts: rd.counts
+      }]))
     }))
   });
 }
@@ -1674,6 +1860,11 @@ const css = `
 .inline-row{display:flex;gap:8px;align-items:center;}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:12px;}
 .card-title{font-size:14px;font-weight:700;}
+.card-sub{font-size:11px;color:var(--muted);font-weight:500;}
+.round-row{display:flex;gap:6px;flex-wrap:wrap;}
+.round-chip{font-size:13px;padding:7px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--muted);cursor:pointer;}
+.round-chip.on{background:var(--rice);color:#0c1a08;border-color:var(--rice);font-weight:700;}
+.ed-round{margin-left:8px;font-size:11px;color:var(--rice);background:rgba(116,194,71,.14);padding:2px 8px;border-radius:999px;font-weight:600;vertical-align:middle;}
 .hint{font-size:12px;color:var(--muted);line-height:1.6;margin:0;}
 .paste-box{width:100%;height:80px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--ink);font-family:ui-monospace,monospace;font-size:12px;padding:10px;resize:vertical;}
 .import-msg{font-size:12px;color:var(--rice);}
