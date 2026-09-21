@@ -333,7 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v16-harvest";
+const VERSION = "v17-harvest-random";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = (n, r) => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_") + "-r" + String(r).replace(/[^A-Za-z0-9._-]/g, "_");
 const roundData = (f, r) => f && f.rounds && f.rounds[r] || {
@@ -947,7 +947,7 @@ function FramesList({
     onClick: ensureHarvestRound
   }, "🌾 収穫専用モード")), appMode === "harvest" && /*#__PURE__*/React.createElement("div", {
     className: "harvest-banner"
-  }, /*#__PURE__*/React.createElement("b", null, "収穫（穂数）"), "：各稲の穂数を記録し、品質調査用10株をランダム指定します。"), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("b", null, "収穫（穂数）"), "：各稲の穂数を記録し、品質調査用5〜10株をランダム指定します。"), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "card-title"
@@ -1077,6 +1077,10 @@ function FrameEditor({
   const [loadingImg, setLoadingImg] = useState(true);
   const [sel, setSel] = useState(null); // selected point id (meas: opens counter)
   const [harvestAddAdjacent, setHarvestAddAdjacent] = useState(false);
+  const [harvestSampleTarget, setHarvestSampleTarget] = useState(() => {
+    const n = Array.isArray(frame.harvestSamples) ? frame.harvestSamples.length : 0;
+    return n >= 5 && n <= 10 ? n : 10;
+  });
   const wrapRef = useRef(null);
   const screenRef = useRef(null);
   const imgRef = useRef(null);
@@ -1396,11 +1400,31 @@ function FrameEditor({
     }
   }, [sel]); // eslint-disable-line
 
-  const chooseHarvestSamples = (n = 10) => {
+  const secureRandomInt = maxExclusive => {
+    if (maxExclusive <= 1) return 0;
+    if (window.crypto && typeof window.crypto.getRandomValues === "function") {
+      const range = 0x100000000;
+      const limit = range - range % maxExclusive;
+      const a = new Uint32Array(1);
+      do { window.crypto.getRandomValues(a); } while (a[0] >= limit);
+      return a[0] % maxExclusive;
+    }
+    return Math.floor(Math.random() * maxExclusive);
+  };
+  const chooseHarvestSamples = (n = harvestSampleTarget) => {
     const ids = frame.points.filter(p => !p.adjacent).map(p => p.id);
     const shuffled = ids.slice();
-    for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = secureRandomInt(i + 1);
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
     updateFrame(num, f => ({...f, harvestSamples: shuffled.slice(0, Math.min(n, shuffled.length))}));
+  };
+  const plantNumber = p => {
+    if (!p) return "";
+    if (p.adjacent) return p.id.split("-").pop();
+    const m = String(p.id).match(/-(\d+)$/);
+    return m ? m[1] : String(frame.points.filter(x => !x.adjacent).findIndex(x => x.id === p.id) + 1).padStart(2, "0");
   };
   const counted = Object.keys(rd.counts).length;
   const harvestSet = new Set(frame.harvestSamples || []);
@@ -1463,14 +1487,21 @@ function FrameEditor({
     }
   }, roundKind === "harvest" ? "収穫（穂数）" : "計測（分げつ数）")), /*#__PURE__*/React.createElement("div", {
     className: "guide"
-  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整、タップで選択→削除。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : roundKind === "harvest" ? "各稲をタップして穂数を記録。★＝不稔率等を調べる採取対象。採取した株は袋のラベルと点IDを一致させてください。" : "点をタップ→数字→「記録して次へ」。橙＝前回値、緑＝今回。ズレは点をドラッグで微調整。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
+  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整、タップで選択→削除。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : roundKind === "harvest" ? "各稲の番号は常時表示されます。タップして穂数を記録。★＝不稔率等を調べる採取対象。袋ラベルは点ID（例：14-03）と一致させてください。" : "点をタップ→数字→「記録して次へ」。橙＝前回値、緑＝今回。ズレは点をドラッグで微調整。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
     className: "warn"
   }, "準備段階の四隅が未設定です。まず「準備」で四隅と稲位置を登録してください。"), phase === "meas" && roundKind === "harvest" && frame.points.length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "harvest-tools"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("b", null, "品質調査用の採取株"), /*#__PURE__*/React.createElement("span", {className:"sample-count"}, (frame.harvestSamples || []).length, "株")), /*#__PURE__*/React.createElement("button", {
-    className: "btn-ghost sm",
-    onClick: () => chooseHarvestSamples(10)
-  }, (frame.harvestSamples || []).length ? "10株を再抽選" : "10株をランダム選択"), (frame.harvestSamples || []).length > 0 && /*#__PURE__*/React.createElement("div", {className:"sample-ids"}, (frame.harvestSamples || []).join(" / ")), /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("b", null, "品質調査用の採取株"), /*#__PURE__*/React.createElement("span", {className:"sample-count"}, (frame.harvestSamples || []).length, "株")), /*#__PURE__*/React.createElement("div", {className:"sample-size-block"}, /*#__PURE__*/React.createElement("span", {className:"sample-size-label"}, "抽出数"), /*#__PURE__*/React.createElement("div", {className:"sample-size-row"}, [5,6,7,8,9,10].map(n => /*#__PURE__*/React.createElement("button", {
+    key: n,
+    className: "sample-size-btn" + (harvestSampleTarget === n ? " on" : ""),
+    onClick: () => setHarvestSampleTarget(n)
+  }, n)))), /*#__PURE__*/React.createElement("button", {
+    className: "btn-ghost sm sample-draw-btn",
+    onClick: () => chooseHarvestSamples(harvestSampleTarget)
+  }, (frame.harvestSamples || []).length ? `${harvestSampleTarget}株で再抽選` : `${harvestSampleTarget}株をランダム選択`), (frame.harvestSamples || []).length > 0 && /*#__PURE__*/React.createElement("div", {className:"sample-ids"}, (frame.harvestSamples || []).map(id => {
+    const p = frame.points.find(x => x.id === id);
+    return p ? `稲${plantNumber(p)}（${id}）` : id;
+  }).join(" / ")), /*#__PURE__*/React.createElement("p", {className:"hint random-note"}, "枠内株のみから重複なしで抽選します。対応ブラウザでは暗号学的乱数 crypto.getRandomValues を使用します。"), /*#__PURE__*/React.createElement("button", {
     className: "btn-ghost sm" + (harvestAddAdjacent ? " adj-on" : ""),
     onClick: () => setHarvestAddAdjacent(x => !x)
   }, harvestAddAdjacent ? "隣接株追加：ON（写真上をタップ）" : "＋ 隣接株を追加"), harvestAddAdjacent && /*#__PURE__*/React.createElement("p", {className:"hint"}, "枠の外側にある収穫対象株を写真上でタップ。A01, A02…として枠内株と分けて保存します。")), !hasImg ? /*#__PURE__*/React.createElement("button", {
@@ -1515,32 +1546,35 @@ function FrameEditor({
     const fr = applyM(dispM, p.u, p.v);
     const isCounted = rd.counts[p.id] != null;
     const isSel = p.id === sel;
+    const fixedPlantLabel = p.adjacent ? plantNumber(p) : plantNumber(p);
     let cls = p.adjacent ? " pt-adj" : " pt-prep",
-      label = p.adjacent ? "A" + (frame.points.filter(x => x.adjacent).findIndex(x => x.id === p.id) + 1) : i + 1;
+      label = fixedPlantLabel;
     if (phase === "meas") {
       if (isCounted) {
         cls = " pt-done";
-        label = rd.counts[p.id].tillers;
+        label = roundKind === "harvest" ? fixedPlantLabel : rd.counts[p.id].tillers;
       } else {
         const pv = prevInfo(p.id);
         if (pv != null) {
           cls = " pt-prevval";
-          label = pv.tillers;
+          label = roundKind === "harvest" ? fixedPlantLabel : pv.tillers;
         } else {
           cls = p.adjacent ? " pt-adj" : " pt-open";
-          label = p.adjacent ? "A" + (frame.points.filter(x => x.adjacent).findIndex(x => x.id === p.id) + 1) : i + 1;
+          label = fixedPlantLabel;
         }
       }
     }
     const isHarvestSample = roundKind === "harvest" && harvestSet.has(p.id);
+    const harvestCount = roundKind === "harvest" && isCounted ? rd.counts[p.id].tillers : null;
     return /*#__PURE__*/React.createElement("span", {
       key: p.id,
-      className: "pt" + cls + (isSel ? " pt-sel" : "") + (isHarvestSample ? " pt-sample" : ""),
+      className: "pt" + cls + (isSel ? " pt-sel" : "") + (isHarvestSample ? " pt-sample" : "") + (roundKind === "harvest" ? " pt-harvest-numbered" : ""),
       style: {
         left: `${fr.fx * 100}%`,
         top: `${fr.fy * 100}%`
-      }
-    }, /*#__PURE__*/React.createElement("em", null, isHarvestSample ? "★" + label : label));
+      },
+      title: p.adjacent ? `隣接株 ${p.id}` : `稲${fixedPlantLabel} / ${p.id}`
+    }, isHarvestSample && /*#__PURE__*/React.createElement("i", {className:"sample-star"}, "★"), /*#__PURE__*/React.createElement("em", null, p.adjacent ? fixedPlantLabel : label), harvestCount != null && /*#__PURE__*/React.createElement("b", {className:"pt-count-badge"}, harvestCount, "穂"));
   }))), /*#__PURE__*/React.createElement("div", {
     className: "ed-rotate"
   }, /*#__PURE__*/React.createElement("span", {
@@ -1625,7 +1659,7 @@ function CounterSheet({
     className: "sheet-head"
   }, /*#__PURE__*/React.createElement("span", {
     className: "sheet-id"
-  }, "点 ", point.id, isSample && /*#__PURE__*/React.createElement("span", {className:"sample-tag"}, " ★採取対象")), /*#__PURE__*/React.createElement("span", {
+  }, unitLabel === "穂" ? "稲 " : "点 ", point.id, isSample && /*#__PURE__*/React.createElement("span", {className:"sample-tag"}, " ★採取対象")), /*#__PURE__*/React.createElement("span", {
     className: "sheet-prog"
   }, counted, "/", total, " 計測済"), /*#__PURE__*/React.createElement("button", {
     className: "modal-x",
@@ -2137,7 +2171,7 @@ const css = `
 .modal-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 
 
-.mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mode-btn{height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-weight:700;font-size:14px}.mode-btn.on{background:var(--rice);border-color:var(--rice);color:#0c1a08}.mode-btn.harvest.on{background:var(--amber);border-color:var(--amber);color:#241700}.harvest-banner{background:rgba(227,169,47,.12);border:1px solid rgba(227,169,47,.55);border-radius:12px;padding:10px 12px;color:#f3d58f;font-size:12px;line-height:1.5}.harvest-tools{background:rgba(227,169,47,.10);border:1px solid rgba(227,169,47,.45);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:13px}.harvest-tools>div:first-child{display:flex;justify-content:space-between;gap:10px}.sample-count,.sample-tag{color:var(--amber);font-weight:700}.sample-ids{font:11px ui-monospace,monospace;color:#f3d58f;line-height:1.6;word-break:break-all}.adj-on{border-color:var(--amber)!important;color:var(--amber)!important}.pt-adj{background:#6b7280!important;color:#fff!important;border-style:dashed!important}.pt-sample{box-shadow:0 0 0 4px rgba(227,169,47,.85),0 0 0 7px rgba(0,0,0,.35)!important;background:var(--amber)!important;color:#241700!important;z-index:8}.pt-sample em{font-size:9px!important}
+.mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mode-btn{height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-weight:700;font-size:14px}.mode-btn.on{background:var(--rice);border-color:var(--rice);color:#0c1a08}.mode-btn.harvest.on{background:var(--amber);border-color:var(--amber);color:#241700}.harvest-banner{background:rgba(227,169,47,.12);border:1px solid rgba(227,169,47,.55);border-radius:12px;padding:10px 12px;color:#f3d58f;font-size:12px;line-height:1.5}.harvest-tools{background:rgba(227,169,47,.10);border:1px solid rgba(227,169,47,.45);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:13px}.harvest-tools>div:first-child{display:flex;justify-content:space-between;gap:10px}.sample-count,.sample-tag{color:var(--amber);font-weight:700}.sample-size-block{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.sample-size-label{font-size:12px;color:var(--muted);font-weight:700}.sample-size-row{display:grid!important;grid-template-columns:repeat(6,1fr);gap:5px;flex:1;min-width:220px}.sample-size-btn{height:34px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);font-weight:800}.sample-size-btn.on{background:var(--amber);border-color:var(--amber);color:#241700}.sample-draw-btn{border-color:rgba(227,169,47,.65)!important}.sample-ids{font:11px ui-monospace,monospace;color:#f3d58f;line-height:1.65;word-break:break-word}.random-note{margin-top:-2px!important}.adj-on{border-color:var(--amber)!important;color:var(--amber)!important}.pt-adj{background:#6b7280!important;color:#fff!important;border-style:dashed!important}.pt-sample{box-shadow:0 0 0 4px rgba(227,169,47,.85),0 0 0 7px rgba(0,0,0,.35)!important;background:var(--amber)!important;color:#241700!important;z-index:8}.pt-harvest-numbered{min-width:31px!important;width:auto!important;padding:0 6px!important;overflow:visible!important}.pt-harvest-numbered em{font-size:10px!important;white-space:nowrap}.sample-star{position:absolute;left:-9px;top:-10px;font-style:normal;font-size:13px;color:#ffd76a;text-shadow:0 1px 2px #000;z-index:2}.pt-count-badge{position:absolute;left:50%;top:25px;transform:translateX(-50%);background:#0e1510;border:1px solid var(--rice);color:var(--ink);border-radius:999px;padding:1px 4px;font-size:8px;line-height:1.25;white-space:nowrap;font-weight:800}.pt-sample .pt-count-badge{border-color:var(--amber)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}.key:active,.stepper:active{transform:none;}}
 `;
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrorBoundary, null, React.createElement(FrameTillerTool)));</script>
