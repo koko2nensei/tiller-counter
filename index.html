@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="分げつ計数">
 <meta name="theme-color" content="#0e1510">
-<title>分げつ計数（DSR）v14</title>
+<title>分げつ・収穫計数（DSR）v16</title>
 <style>html,body{margin:0;padding:0;background:#0e1510;-webkit-text-size-adjust:100%;}#root{min-height:100vh;}</style>
 </head>
 <body>
@@ -333,7 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v14";
+const VERSION = "v16-harvest";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = (n, r) => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_") + "-r" + String(r).replace(/[^A-Za-z0-9._-]/g, "_");
 const roundData = (f, r) => f && f.rounds && f.rounds[r] || {
@@ -537,6 +537,7 @@ function FrameTillerTool() {
     label: "1回目"
   }]);
   const [currentRound, setCurrentRound] = useState("1");
+  const [appMode, setAppMode] = useState("tiller"); // tiller | harvest
   const [view, setView] = useState("frames"); // frames | editor | data
   const [openNum, setOpenNum] = useState(null);
   useEffect(() => {
@@ -563,6 +564,7 @@ function FrameTillerTool() {
             points,
             seq: f && f.seq ? f.seq : points.length + 1,
             hasPrep: !!(f && f.hasPrep),
+            harvestSamples: Array.isArray(f && f.harvestSamples) ? f.harvestSamples : [],
             rounds: roundsObj
           };
         }).filter(f => f.num);
@@ -573,6 +575,7 @@ function FrameTillerTool() {
         }];
         setRounds(rs);
         setCurrentRound(s.currentRound && rs.some(r => r.id === s.currentRound) ? s.currentRound : rs[rs.length - 1].id);
+        setAppMode(s.appMode === "harvest" ? "harvest" : "tiller");
       }
       setLoaded(true);
     })();
@@ -586,38 +589,73 @@ function FrameTillerTool() {
         session,
         frames,
         rounds,
-        currentRound
+        currentRound,
+        appMode
       });
     }, 400);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [loaded, session, frames, rounds, currentRound]);
-  const updateFrame = useCallback((num, updater) => {
-    setFrames(arr => arr.map(f => f.num === num ? updater(f) : f));
+  }, [loaded, session, frames, rounds, currentRound, appMode]);
+  const framesRef = useRef(frames);
+  useEffect(() => {
+    framesRef.current = frames;
+  }, [frames]);
+  const hist = useRef({
+    past: [],
+    future: []
+  });
+  const [, forceHist] = useState(0);
+  const bumpHist = () => forceHist(n => n + 1);
+  const mutateFrames = useCallback(fn => {
+    hist.current.past.push(framesRef.current);
+    if (hist.current.past.length > 50) hist.current.past.shift();
+    hist.current.future = [];
+    setFrames(arr => fn(arr));
+    bumpHist();
   }, []);
+  const undo = () => {
+    const h = hist.current;
+    if (!h.past.length) return;
+    h.future.push(framesRef.current);
+    setFrames(h.past.pop());
+    bumpHist();
+  };
+  const redo = () => {
+    const h = hist.current;
+    if (!h.future.length) return;
+    h.past.push(framesRef.current);
+    setFrames(h.future.pop());
+    bumpHist();
+  };
+  const canUndo = hist.current.past.length > 0;
+  const canRedo = hist.current.future.length > 0;
+  const updateFrame = useCallback((num, updater) => {
+    mutateFrames(arr => arr.map(f => f.num === num ? updater(f) : f));
+  }, [mutateFrames]);
   const seedFrames = count => {
     const n = Math.max(1, Math.min(200, parseInt(count, 10) || 0));
-    setFrames(Array.from({
+    mutateFrames(() => Array.from({
       length: n
     }, (_, i) => newFrame(String(i + 1).padStart(2, "0"))));
   };
   const addFrame = num => {
     const t = num.trim();
     if (!t || frames.some(f => f.num === t)) return;
-    setFrames(a => [...a, newFrame(t)]);
+    mutateFrames(a => [...a, newFrame(t)]);
   };
   const removeFrame = num => {
     delKey(PREP(num));
     rounds.forEach(r => delKey(MEAS(num, r.id)));
-    setFrames(a => a.filter(f => f.num !== num));
+    mutateFrames(a => a.filter(f => f.num !== num));
   };
-  const addRound = label => {
+  const addRound = (label, kind = "tiller") => {
     const id = String(Math.max(0, ...rounds.map(r => parseInt(r.id, 10) || 0)) + 1);
     const lb = label && label.trim() || `${id}回目 (${today()})`;
     setRounds(rs => [...rs, {
       id,
-      label: lb
+      label: lb,
+      kind
     }]);
     setCurrentRound(id);
   };
@@ -631,7 +669,8 @@ function FrameTillerTool() {
         const m = new Map(rs.map(r => [r.id, r]));
         for (const r of obj.rounds) if (r && r.id != null) m.set(String(r.id), {
           id: String(r.id),
-          label: r.label || String(r.id)
+          label: r.label || String(r.id),
+          kind: r.kind || (String(r.label || "").includes("収穫") ? "harvest" : "tiller")
         });
         return Array.from(m.values());
       });
@@ -645,7 +684,7 @@ function FrameTillerTool() {
       }
       return o;
     };
-    setFrames(prev => {
+    mutateFrames(prev => {
       const map = new Map(prev.map(f => [f.num, f]));
       for (const inf of obj.frames || []) {
         const validPts = (inf.points || []).filter(p => Number.isFinite(p.u) && Number.isFinite(p.v));
@@ -668,6 +707,7 @@ function FrameTillerTool() {
             points: validPts,
             seq: inf.seq || validPts.length + 1,
             hasPrep: false,
+            harvestSamples: Array.isArray(inf.harvestSamples) ? inf.harvestSamples : [],
             rounds: r2
           });
         } else {
@@ -692,15 +732,24 @@ function FrameTillerTool() {
             ...cur,
             points,
             seq: Math.max(cur.seq || 1, inf.seq || 1, points.length + 1),
+            harvestSamples: Array.from(new Set([...(cur.harvestSamples || []), ...(inf.harvestSamples || [])])).filter(id => points.some(p => p.id === id)),
             rounds: r2
           });
         }
       }
       return Array.from(map.values());
     });
-  }, []);
+  }, [mutateFrames]);
   const openFrame = frames.find(f => f.num === openNum);
   const roundLabel = (rounds.find(r => r.id === currentRound) || {}).label || currentRound;
+  const currentKind = (rounds.find(r => r.id === currentRound) || {}).kind || (String(roundLabel).includes("収穫") ? "harvest" : "tiller");
+  const ensureHarvestRound = () => {
+    const ex = rounds.find(r => r.kind === "harvest" || String(r.label).includes("収穫"));
+    if (ex) { setCurrentRound(ex.id); setAppMode("harvest"); return; }
+    const id = String(Math.max(0, ...rounds.map(r => parseInt(r.id, 10) || 0)) + 1);
+    setRounds(rs => [...rs, {id, label:"収穫（穂数）", kind:"harvest"}]);
+    setCurrentRound(id); setAppMode("harvest");
+  };
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("style", null, css), /*#__PURE__*/React.createElement("div", {
     className: "app"
   }, /*#__PURE__*/React.createElement("div", {
@@ -714,6 +763,9 @@ function FrameTillerTool() {
     setCurrentRound: setCurrentRound,
     onAddRound: addRound,
     onRenameRound: renameRound,
+    appMode: appMode,
+    setAppMode: setAppMode,
+    ensureHarvestRound: ensureHarvestRound,
     onOpen: n => {
       setOpenNum(n);
       setView("editor");
@@ -725,9 +777,15 @@ function FrameTillerTool() {
     frame: openFrame,
     round: currentRound,
     roundLabel: roundLabel,
+    roundKind: currentKind,
+    appMode: appMode,
     rounds: rounds,
     onBack: () => setView("frames"),
-    updateFrame: updateFrame
+    updateFrame: updateFrame,
+    onUndo: undo,
+    onRedo: redo,
+    canUndo: canUndo,
+    canRedo: canRedo
   }), view === "data" && /*#__PURE__*/React.createElement(DataView, {
     session: session,
     frames: frames,
@@ -755,6 +813,7 @@ function newFrame(num) {
     points: [],
     seq: 1,
     hasPrep: false,
+    harvestSamples: [],
     rounds: {}
   };
 }
@@ -845,6 +904,9 @@ function FramesList({
   setCurrentRound,
   onAddRound,
   onRenameRound,
+  appMode,
+  setAppMode,
+  ensureHarvestRound,
   onOpen,
   onSeed,
   onAdd,
@@ -876,6 +938,16 @@ function FramesList({
     onChange: e => setSession(e.target.value),
     placeholder: "例: 田無 にじのきらめき 2026"
   })), /*#__PURE__*/React.createElement("div", {
+    className: "mode-switch"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "mode-btn" + (appMode === "tiller" ? " on" : ""),
+    onClick: () => setAppMode("tiller")
+  }, "通常計測"), /*#__PURE__*/React.createElement("button", {
+    className: "mode-btn harvest" + (appMode === "harvest" ? " on" : ""),
+    onClick: ensureHarvestRound
+  }, "🌾 収穫専用モード")), appMode === "harvest" && /*#__PURE__*/React.createElement("div", {
+    className: "harvest-banner"
+  }, /*#__PURE__*/React.createElement("b", null, "収穫（穂数）"), "：各稲の穂数を記録し、品質調査用10株をランダム指定します。"), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "card-title"
@@ -897,7 +969,7 @@ function FramesList({
   }), /*#__PURE__*/React.createElement("button", {
     className: "btn-primary auto",
     onClick: () => {
-      onAddRound(newRoundLabel);
+      onAddRound(newRoundLabel, "tiller");
       setNewRoundLabel("");
       setAddingRound(false);
     }
@@ -989,15 +1061,22 @@ function FrameEditor({
   frame,
   round,
   roundLabel,
+  roundKind,
+  appMode,
   rounds,
   onBack,
-  updateFrame
+  updateFrame,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo
 }) {
   const [phase, setPhase] = useState("prep"); // prep | meas
   const [prepImg, setPrepImg] = useState(null);
   const [measImg, setMeasImg] = useState(null);
   const [loadingImg, setLoadingImg] = useState(true);
   const [sel, setSel] = useState(null); // selected point id (meas: opens counter)
+  const [harvestAddAdjacent, setHarvestAddAdjacent] = useState(false);
   const wrapRef = useRef(null);
   const screenRef = useRef(null);
   const imgRef = useRef(null);
@@ -1199,22 +1278,27 @@ function FrameEditor({
         }]
       }));
     } else if (g.kind === "add" && !g.moved) {
-      if (phase === "prep") {
+      if (phase === "prep" || (phase === "meas" && roundKind === "harvest" && harvestAddAdjacent)) {
         const {
           fx,
           fy
         } = frac(e);
         const uv = fracToUV(corners, fx, fy);
         setSel(null);
-        updateFrame(num, f => ({
-          ...f,
-          points: [...f.points, {
-            id: `${num}-${String(f.seq).padStart(2, "0")}`,
-            u: uv.u,
-            v: uv.v
-          }],
-          seq: f.seq + 1
-        }));
+        updateFrame(num, f => {
+          const isAdj = phase === "meas" && roundKind === "harvest";
+          const aseq = f.points.filter(p => p.adjacent).length + 1;
+          return {
+            ...f,
+            points: [...f.points, {
+              id: isAdj ? `${num}-A${String(aseq).padStart(2, "0")}` : `${num}-${String(f.seq).padStart(2, "0")}`,
+              u: uv.u,
+              v: uv.v,
+              adjacent: isAdj || undefined
+            }],
+            seq: isAdj ? f.seq : f.seq + 1
+          };
+        });
       }
     } else if (g.kind === "point" && !g.moved) {
       setSel(g.id);
@@ -1256,6 +1340,7 @@ function FrameEditor({
       return {
         ...f,
         points: f.points.filter(p => p.id !== id),
+        harvestSamples: (f.harvestSamples || []).filter(x => x !== id),
         rounds
       };
     });
@@ -1311,7 +1396,14 @@ function FrameEditor({
     }
   }, [sel]); // eslint-disable-line
 
+  const chooseHarvestSamples = (n = 10) => {
+    const ids = frame.points.filter(p => !p.adjacent).map(p => p.id);
+    const shuffled = ids.slice();
+    for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
+    updateFrame(num, f => ({...f, harvestSamples: shuffled.slice(0, Math.min(n, shuffled.length))}));
+  };
   const counted = Object.keys(rd.counts).length;
+  const harvestSet = new Set(frame.harvestSamples || []);
   const selPoint = frame.points.find(p => p.id === sel);
   const prevInfo = pid => {
     const idx = (rounds || []).findIndex(r => r.id === round);
@@ -1341,13 +1433,21 @@ function FrameEditor({
     className: "back",
     onClick: onBack,
     "aria-label": "戻る"
-  }, "‹ 枠一覧"), /*#__PURE__*/React.createElement("div", {
+  }, "‹ 一覧"), /*#__PURE__*/React.createElement("div", {
     className: "ed-title"
   }, "枠 ", num, phase === "meas" && /*#__PURE__*/React.createElement("span", {
     className: "ed-round"
-  }, roundLabel)), /*#__PURE__*/React.createElement("div", {
-    className: "ed-prog"
-  }, phase === "meas" ? `${counted}/${frame.points.length}` : `${frame.points.length}点`)), /*#__PURE__*/React.createElement("div", {
+  }, roundLabel)), /*#__PURE__*/React.createElement("button", {
+    className: "hist-btn",
+    onClick: onUndo,
+    disabled: !canUndo,
+    "aria-label": "1つ戻る"
+  }, "↶"), /*#__PURE__*/React.createElement("button", {
+    className: "hist-btn",
+    onClick: onRedo,
+    disabled: !canRedo,
+    "aria-label": "1つ進む"
+  }, "↷")), /*#__PURE__*/React.createElement("div", {
     className: "seg"
   }, /*#__PURE__*/React.createElement("button", {
     className: "seg-btn" + (phase === "prep" ? " on" : ""),
@@ -1361,11 +1461,19 @@ function FrameEditor({
       setPhase("meas");
       setSel(null);
     }
-  }, "計測（分げつ数）")), /*#__PURE__*/React.createElement("div", {
+  }, roundKind === "harvest" ? "収穫（穂数）" : "計測（分げつ数）")), /*#__PURE__*/React.createElement("div", {
     className: "guide"
-  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整、タップで選択→削除。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : "点をタップ→数字→「記録して次へ」。橙＝前回値、緑＝今回。ズレは点をドラッグで微調整。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
+  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整、タップで選択→削除。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : roundKind === "harvest" ? "各稲をタップして穂数を記録。★＝不稔率等を調べる採取対象。採取した株は袋のラベルと点IDを一致させてください。" : "点をタップ→数字→「記録して次へ」。橙＝前回値、緑＝今回。ズレは点をドラッグで微調整。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
     className: "warn"
-  }, "準備段階の四隅が未設定です。まず「準備」で四隅と稲位置を登録してください。"), !hasImg ? /*#__PURE__*/React.createElement("button", {
+  }, "準備段階の四隅が未設定です。まず「準備」で四隅と稲位置を登録してください。"), phase === "meas" && roundKind === "harvest" && frame.points.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "harvest-tools"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("b", null, "品質調査用の採取株"), /*#__PURE__*/React.createElement("span", {className:"sample-count"}, (frame.harvestSamples || []).length, "株")), /*#__PURE__*/React.createElement("button", {
+    className: "btn-ghost sm",
+    onClick: () => chooseHarvestSamples(10)
+  }, (frame.harvestSamples || []).length ? "10株を再抽選" : "10株をランダム選択"), (frame.harvestSamples || []).length > 0 && /*#__PURE__*/React.createElement("div", {className:"sample-ids"}, (frame.harvestSamples || []).join(" / ")), /*#__PURE__*/React.createElement("button", {
+    className: "btn-ghost sm" + (harvestAddAdjacent ? " adj-on" : ""),
+    onClick: () => setHarvestAddAdjacent(x => !x)
+  }, harvestAddAdjacent ? "隣接株追加：ON（写真上をタップ）" : "＋ 隣接株を追加"), harvestAddAdjacent && /*#__PURE__*/React.createElement("p", {className:"hint"}, "枠の外側にある収穫対象株を写真上でタップ。A01, A02…として枠内株と分けて保存します。")), !hasImg ? /*#__PURE__*/React.createElement("button", {
     className: "btn-primary",
     onClick: () => pickPhoto(phase)
   }, phase === "prep" ? "枠写真を読み込む" : "計測写真を読み込む") : !img ? /*#__PURE__*/React.createElement("div", {
@@ -1407,8 +1515,8 @@ function FrameEditor({
     const fr = applyM(dispM, p.u, p.v);
     const isCounted = rd.counts[p.id] != null;
     const isSel = p.id === sel;
-    let cls = " pt-prep",
-      label = i + 1;
+    let cls = p.adjacent ? " pt-adj" : " pt-prep",
+      label = p.adjacent ? "A" + (frame.points.filter(x => x.adjacent).findIndex(x => x.id === p.id) + 1) : i + 1;
     if (phase === "meas") {
       if (isCounted) {
         cls = " pt-done";
@@ -1419,19 +1527,20 @@ function FrameEditor({
           cls = " pt-prevval";
           label = pv.tillers;
         } else {
-          cls = " pt-open";
-          label = i + 1;
+          cls = p.adjacent ? " pt-adj" : " pt-open";
+          label = p.adjacent ? "A" + (frame.points.filter(x => x.adjacent).findIndex(x => x.id === p.id) + 1) : i + 1;
         }
       }
     }
+    const isHarvestSample = roundKind === "harvest" && harvestSet.has(p.id);
     return /*#__PURE__*/React.createElement("span", {
       key: p.id,
-      className: "pt" + cls + (isSel ? " pt-sel" : ""),
+      className: "pt" + cls + (isSel ? " pt-sel" : "") + (isHarvestSample ? " pt-sample" : ""),
       style: {
         left: `${fr.fx * 100}%`,
         top: `${fr.fy * 100}%`
       }
-    }, /*#__PURE__*/React.createElement("em", null, label));
+    }, /*#__PURE__*/React.createElement("em", null, isHarvestSample ? "★" + label : label));
   }))), /*#__PURE__*/React.createElement("div", {
     className: "ed-rotate"
   }, /*#__PURE__*/React.createElement("span", {
@@ -1480,6 +1589,8 @@ function FrameEditor({
     counted: counted,
     total: frame.points.length,
     prev: prevInfo(selPoint.id),
+    unitLabel: roundKind === "harvest" ? "穂" : "分げつ",
+    isSample: roundKind === "harvest" && harvestSet.has(selPoint.id),
     onSaveNext: v => saveAndNext(selPoint.id, v),
     onSaveClose: v => {
       setCount(selPoint.id, v);
@@ -1497,6 +1608,8 @@ function CounterSheet({
   counted,
   total,
   prev,
+  unitLabel,
+  isSample,
   onSaveNext,
   onSaveClose,
   onClose,
@@ -1512,7 +1625,7 @@ function CounterSheet({
     className: "sheet-head"
   }, /*#__PURE__*/React.createElement("span", {
     className: "sheet-id"
-  }, "点 ", point.id), /*#__PURE__*/React.createElement("span", {
+  }, "点 ", point.id, isSample && /*#__PURE__*/React.createElement("span", {className:"sample-tag"}, " ★採取対象")), /*#__PURE__*/React.createElement("span", {
     className: "sheet-prog"
   }, counted, "/", total, " 計測済"), /*#__PURE__*/React.createElement("button", {
     className: "modal-x",
@@ -1530,7 +1643,7 @@ function CounterSheet({
     className: "count-num"
   }, v), /*#__PURE__*/React.createElement("div", {
     className: "count-unit"
-  }, "分げつ")), /*#__PURE__*/React.createElement("button", {
+  }, unitLabel || "分げつ")), /*#__PURE__*/React.createElement("button", {
     className: "stepper plus",
     onClick: () => setV(x => Math.min(MAX_TILLERS, x + 1))
   }, "+")), /*#__PURE__*/React.createElement("div", {
@@ -1714,14 +1827,14 @@ function DataView({
   }, importMsg)), exportOpen && /*#__PURE__*/React.createElement(ExportModal, {
     text: buildCsv(session, frames, rounds),
     title: "CSV書き出し（全測定回）",
-    note: "列: session, frame, point_id, u, v, round, round_label, tiller_count, recorded_at。1行＝1点×1測定回。",
+    note: "列: session, frame, point_id, u, v, round, round_label, measure_type, count, unit, quality_sample, adjacent_plant, recorded_at。収穫回は穂数・採取対象・枠隣接株フラグを出力。",
     filename: `tiller_${today()}.csv`,
     mime: "text/csv",
     onClose: () => setExportOpen(false)
   }), shareOpen && /*#__PURE__*/React.createElement(ExportModal, {
     text: buildProject(session, frames, rounds),
     title: "共有ファイル（PC↔スマホ）",
-    note: "枠・点・全測定回の分げつ数を含みます（写真は含まれません）。相手端末の『読み込み』でマージされます。",
+    note: "枠・点・全測定回の分げつ数/穂数・品質調査用の採取対象を含みます（写真は含まれません）。相手端末の『読み込み』でマージされます。",
     filename: `tiller_project_${today()}.json`,
     mime: "application/json",
     onClose: () => setShareOpen(false)
@@ -1807,12 +1920,15 @@ function buildCsv(session, frames, rounds) {
   (rounds || []).forEach(r => {
     rlabel[r.id] = r.label;
   });
-  const rows = [["session", "frame", "point_id", "u", "v", "round", "round_label", "tiller_count", "recorded_at"]];
+  const rkind = {};
+  (rounds || []).forEach(r => { rkind[r.id] = r.kind || (String(r.label || "").includes("収穫") ? "harvest" : "tiller"); });
+  const rows = [["session", "frame", "point_id", "u", "v", "round", "round_label", "measure_type", "count", "unit", "quality_sample", "adjacent_plant", "recorded_at"]];
   for (const f of frames) for (const p of f.points) {
     for (const [rid, rd] of Object.entries(f.rounds || {})) {
       const rec = rd.counts[p.id];
       if (!rec) continue;
-      rows.push([session, f.num, p.id, Number.isFinite(p.u) ? p.u.toFixed(4) : "", Number.isFinite(p.v) ? p.v.toFixed(4) : "", rid, rlabel[rid] || rid, rec.tillers, rec.ts].map(esc));
+      const kind = rkind[rid] || "tiller";
+      rows.push([session, f.num, p.id, Number.isFinite(p.u) ? p.u.toFixed(4) : "", Number.isFinite(p.v) ? p.v.toFixed(4) : "", rid, rlabel[rid] || rid, kind, rec.tillers, kind === "harvest" ? "panicles" : "tillers", (f.harvestSamples || []).includes(p.id) ? 1 : 0, p.adjacent ? 1 : 0, rec.ts].map(esc));
     }
   }
   return rows.map(r => r.join(",")).join("\n");
@@ -1820,7 +1936,7 @@ function buildCsv(session, frames, rounds) {
 function buildProject(session, frames, rounds) {
   return JSON.stringify({
     type: "dsr-tiller-export",
-    version: 2,
+    version: 3,
     session,
     exportedAt: stamp(),
     rounds,
@@ -1828,6 +1944,7 @@ function buildProject(session, frames, rounds) {
       num: f.num,
       points: f.points,
       seq: f.seq,
+      harvestSamples: f.harvestSamples || [],
       rounds: Object.fromEntries(Object.entries(f.rounds || {}).map(([rid, rd]) => [rid, {
         counts: rd.counts
       }]))
@@ -1923,9 +2040,12 @@ const css = `
 
 /* editor */
 .editor{gap:12px;}
-.ed-top{display:flex;align-items:center;justify-content:space-between;padding-top:4px;}
-.back{background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:4px 0;}
-.ed-title{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;}
+.ed-top{display:flex;align-items:center;gap:8px;padding-top:4px;}
+.back{background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:4px 0;flex:none;}
+.ed-title{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums;flex:1;min-width:0;}
+.hist-btn{width:44px;height:40px;border-radius:11px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:20px;cursor:pointer;flex:none;}
+.hist-btn:disabled{opacity:.35;}
+.hist-btn:active{background:var(--panel2);}
 .ed-prog{font-size:13px;color:var(--rice);font-weight:700;font-variant-numeric:tabular-nums;}
 .seg{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;}
 .seg-btn{flex:1;height:40px;border:none;border-radius:9px;background:transparent;color:var(--muted);font-size:14px;font-weight:600;cursor:pointer;}
@@ -2016,6 +2136,8 @@ const css = `
 .csv-box{width:100%;height:140px;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--ink);font-family:ui-monospace,monospace;font-size:12px;padding:10px;resize:none;}
 .modal-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 
+
+.mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mode-btn{height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-weight:700;font-size:14px}.mode-btn.on{background:var(--rice);border-color:var(--rice);color:#0c1a08}.mode-btn.harvest.on{background:var(--amber);border-color:var(--amber);color:#241700}.harvest-banner{background:rgba(227,169,47,.12);border:1px solid rgba(227,169,47,.55);border-radius:12px;padding:10px 12px;color:#f3d58f;font-size:12px;line-height:1.5}.harvest-tools{background:rgba(227,169,47,.10);border:1px solid rgba(227,169,47,.45);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:13px}.harvest-tools>div:first-child{display:flex;justify-content:space-between;gap:10px}.sample-count,.sample-tag{color:var(--amber);font-weight:700}.sample-ids{font:11px ui-monospace,monospace;color:#f3d58f;line-height:1.6;word-break:break-all}.adj-on{border-color:var(--amber)!important;color:var(--amber)!important}.pt-adj{background:#6b7280!important;color:#fff!important;border-style:dashed!important}.pt-sample{box-shadow:0 0 0 4px rgba(227,169,47,.85),0 0 0 7px rgba(0,0,0,.35)!important;background:var(--amber)!important;color:#241700!important;z-index:8}.pt-sample em{font-size:9px!important}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}.key:active,.stepper:active{transform:none;}}
 `;
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrorBoundary, null, React.createElement(FrameTillerTool)));</script>
