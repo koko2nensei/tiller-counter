@@ -333,7 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v17-harvest-random";
+const VERSION = "v18-lodging";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = (n, r) => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_") + "-r" + String(r).replace(/[^A-Za-z0-9._-]/g, "_");
 const roundData = (f, r) => f && f.rounds && f.rounds[r] || {
@@ -1350,23 +1350,25 @@ function FrameEditor({
     });
     setSel(null);
   };
-  const setCount = (id, tillers) => {
+  const setCount = (id, tillers, lodged = false) => {
     updateFrame(num, f => updRound(f, {
       counts: {
         ...roundData(f, round).counts,
         [id]: {
           tillers,
+          lodged: roundKind === "harvest" ? false : !!lodged,
           ts: stamp()
         }
       }
     }));
   };
-  const saveAndNext = (id, tillers) => {
+  const saveAndNext = (id, tillers, lodged = false) => {
     updateFrame(num, f => updRound(f, {
       counts: {
         ...roundData(f, round).counts,
         [id]: {
           tillers,
+          lodged: roundKind === "harvest" ? false : !!lodged,
           ts: stamp()
         }
       }
@@ -1435,6 +1437,7 @@ function FrameEditor({
       const c = roundData(frame, rounds[i].id).counts[pid];
       if (c != null) return {
         tillers: c.tillers,
+        lodged: !!c.lodged,
         label: rounds[i].label
       };
     }
@@ -1566,15 +1569,16 @@ function FrameEditor({
     }
     const isHarvestSample = roundKind === "harvest" && harvestSet.has(p.id);
     const harvestCount = roundKind === "harvest" && isCounted ? rd.counts[p.id].tillers : null;
+    const isLodged = roundKind !== "harvest" && isCounted && !!rd.counts[p.id].lodged;
     return /*#__PURE__*/React.createElement("span", {
       key: p.id,
-      className: "pt" + cls + (isSel ? " pt-sel" : "") + (isHarvestSample ? " pt-sample" : "") + (roundKind === "harvest" ? " pt-harvest-numbered" : ""),
+      className: "pt" + cls + (isSel ? " pt-sel" : "") + (isHarvestSample ? " pt-sample" : "") + (isLodged ? " pt-lodged" : "") + (roundKind === "harvest" ? " pt-harvest-numbered" : ""),
       style: {
         left: `${fr.fx * 100}%`,
         top: `${fr.fy * 100}%`
       },
       title: p.adjacent ? `隣接株 ${p.id}` : `稲${fixedPlantLabel} / ${p.id}`
-    }, isHarvestSample && /*#__PURE__*/React.createElement("i", {className:"sample-star"}, "★"), /*#__PURE__*/React.createElement("em", null, p.adjacent ? fixedPlantLabel : label), harvestCount != null && /*#__PURE__*/React.createElement("b", {className:"pt-count-badge"}, harvestCount, "穂"));
+    }, isHarvestSample && /*#__PURE__*/React.createElement("i", {className:"sample-star"}, "★"), isLodged && /*#__PURE__*/React.createElement("i", {className:"lodging-mark"}, "倒"), /*#__PURE__*/React.createElement("em", null, p.adjacent ? fixedPlantLabel : label), harvestCount != null && /*#__PURE__*/React.createElement("b", {className:"pt-count-badge"}, harvestCount, "穂"));
   }))), /*#__PURE__*/React.createElement("div", {
     className: "ed-rotate"
   }, /*#__PURE__*/React.createElement("span", {
@@ -1620,14 +1624,16 @@ function FrameEditor({
     key: selPoint.id,
     point: selPoint,
     initial: rd.counts[selPoint.id]?.tillers ?? 0,
+    initialLodged: !!rd.counts[selPoint.id]?.lodged,
     counted: counted,
     total: frame.points.length,
     prev: prevInfo(selPoint.id),
     unitLabel: roundKind === "harvest" ? "穂" : "分げつ",
+    showLodging: roundKind !== "harvest",
     isSample: roundKind === "harvest" && harvestSet.has(selPoint.id),
-    onSaveNext: v => saveAndNext(selPoint.id, v),
-    onSaveClose: v => {
-      setCount(selPoint.id, v);
+    onSaveNext: (v, lodged) => saveAndNext(selPoint.id, v, lodged),
+    onSaveClose: (v, lodged) => {
+      setCount(selPoint.id, v, lodged);
       setSel(null);
     },
     onDelete: () => deletePoint(selPoint.id),
@@ -1639,10 +1645,12 @@ function FrameEditor({
 function CounterSheet({
   point,
   initial,
+  initialLodged,
   counted,
   total,
   prev,
   unitLabel,
+  showLodging,
   isSample,
   onSaveNext,
   onSaveClose,
@@ -1650,6 +1658,7 @@ function CounterSheet({
   onDelete
 }) {
   const [v, setV] = useState(initial);
+  const [lodged, setLodged] = useState(!!initialLodged);
   const [confirmDel, setConfirmDel] = useState(false);
   const digit = d => setV(x => Math.min(MAX_TILLERS, x * 10 + d));
   return /*#__PURE__*/React.createElement("div", {
@@ -1666,7 +1675,11 @@ function CounterSheet({
     onClick: onClose
   }, "✕")), prev != null && /*#__PURE__*/React.createElement("div", {
     className: "cs-prev"
-  }, "前回（", prev.label, "）: ", /*#__PURE__*/React.createElement("b", null, prev.tillers), " 本"), /*#__PURE__*/React.createElement("div", {
+  }, "前回（", prev.label, "）: ", /*#__PURE__*/React.createElement("b", null, prev.tillers), " 本", prev.lodged && /*#__PURE__*/React.createElement("span", {className:"prev-lodged"}, " ・ 倒伏")), showLodging && /*#__PURE__*/React.createElement("button", {
+    className: "lodging-toggle" + (lodged ? " on" : ""),
+    onClick: () => setLodged(x => !x),
+    "aria-pressed": lodged
+  }, lodged ? "⚠ 倒伏あり ✓" : "倒伏なし（タップで倒伏にする）"), showLodging && /*#__PURE__*/React.createElement("p", {className:"lodging-hint"}, "倒伏を記録しても、下で分げつ数を通常どおり数えてください。"), /*#__PURE__*/React.createElement("div", {
     className: "cs-counter"
   }, /*#__PURE__*/React.createElement("button", {
     className: "stepper minus",
@@ -1697,14 +1710,14 @@ function CounterSheet({
     onClick: () => setV(x => Math.floor(x / 10))
   }, "⌫")), /*#__PURE__*/React.createElement("button", {
     className: "btn-record",
-    onClick: () => onSaveNext(v)
+    onClick: () => onSaveNext(v, lodged)
   }, "記録して次へ ", /*#__PURE__*/React.createElement("span", {
     className: "rec-arrow"
   }, "→")), /*#__PURE__*/React.createElement("div", {
     className: "cs-actions2"
   }, /*#__PURE__*/React.createElement("button", {
     className: "btn-ghost sm",
-    onClick: () => onSaveClose(v)
+    onClick: () => onSaveClose(v, lodged)
   }, "記録して閉じる"), confirmDel ? /*#__PURE__*/React.createElement("span", {
     className: "cs-del-confirm"
   }, "削除？", /*#__PURE__*/React.createElement("button", {
@@ -1861,14 +1874,14 @@ function DataView({
   }, importMsg)), exportOpen && /*#__PURE__*/React.createElement(ExportModal, {
     text: buildCsv(session, frames, rounds),
     title: "CSV書き出し（全測定回）",
-    note: "列: session, frame, point_id, u, v, round, round_label, measure_type, count, unit, quality_sample, adjacent_plant, recorded_at。収穫回は穂数・採取対象・枠隣接株フラグを出力。",
+    note: "列: session, frame, point_id, u, v, round, round_label, measure_type, count, unit, lodging, quality_sample, adjacent_plant, recorded_at。通常回は分げつ数と倒伏状態、収穫回は穂数・採取対象・枠隣接株フラグを出力。",
     filename: `tiller_${today()}.csv`,
     mime: "text/csv",
     onClose: () => setExportOpen(false)
   }), shareOpen && /*#__PURE__*/React.createElement(ExportModal, {
     text: buildProject(session, frames, rounds),
     title: "共有ファイル（PC↔スマホ）",
-    note: "枠・点・全測定回の分げつ数/穂数・品質調査用の採取対象を含みます（写真は含まれません）。相手端末の『読み込み』でマージされます。",
+    note: "枠・点・全測定回の分げつ数/穂数・倒伏状態・品質調査用の採取対象を含みます（写真は含まれません）。相手端末の『読み込み』でマージされます。",
     filename: `tiller_project_${today()}.json`,
     mime: "application/json",
     onClose: () => setShareOpen(false)
@@ -1956,13 +1969,13 @@ function buildCsv(session, frames, rounds) {
   });
   const rkind = {};
   (rounds || []).forEach(r => { rkind[r.id] = r.kind || (String(r.label || "").includes("収穫") ? "harvest" : "tiller"); });
-  const rows = [["session", "frame", "point_id", "u", "v", "round", "round_label", "measure_type", "count", "unit", "quality_sample", "adjacent_plant", "recorded_at"]];
+  const rows = [["session", "frame", "point_id", "u", "v", "round", "round_label", "measure_type", "count", "unit", "lodging", "quality_sample", "adjacent_plant", "recorded_at"]];
   for (const f of frames) for (const p of f.points) {
     for (const [rid, rd] of Object.entries(f.rounds || {})) {
       const rec = rd.counts[p.id];
       if (!rec) continue;
       const kind = rkind[rid] || "tiller";
-      rows.push([session, f.num, p.id, Number.isFinite(p.u) ? p.u.toFixed(4) : "", Number.isFinite(p.v) ? p.v.toFixed(4) : "", rid, rlabel[rid] || rid, kind, rec.tillers, kind === "harvest" ? "panicles" : "tillers", (f.harvestSamples || []).includes(p.id) ? 1 : 0, p.adjacent ? 1 : 0, rec.ts].map(esc));
+      rows.push([session, f.num, p.id, Number.isFinite(p.u) ? p.u.toFixed(4) : "", Number.isFinite(p.v) ? p.v.toFixed(4) : "", rid, rlabel[rid] || rid, kind, rec.tillers, kind === "harvest" ? "panicles" : "tillers", kind === "harvest" ? 0 : (rec.lodged ? 1 : 0), (f.harvestSamples || []).includes(p.id) ? 1 : 0, p.adjacent ? 1 : 0, rec.ts].map(esc));
     }
   }
   return rows.map(r => r.join(",")).join("\n");
@@ -1970,7 +1983,7 @@ function buildCsv(session, frames, rounds) {
 function buildProject(session, frames, rounds) {
   return JSON.stringify({
     type: "dsr-tiller-export",
-    version: 3,
+    version: 4,
     session,
     exportedAt: stamp(),
     rounds,
@@ -2172,6 +2185,7 @@ const css = `
 
 
 .mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mode-btn{height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-weight:700;font-size:14px}.mode-btn.on{background:var(--rice);border-color:var(--rice);color:#0c1a08}.mode-btn.harvest.on{background:var(--amber);border-color:var(--amber);color:#241700}.harvest-banner{background:rgba(227,169,47,.12);border:1px solid rgba(227,169,47,.55);border-radius:12px;padding:10px 12px;color:#f3d58f;font-size:12px;line-height:1.5}.harvest-tools{background:rgba(227,169,47,.10);border:1px solid rgba(227,169,47,.45);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:13px}.harvest-tools>div:first-child{display:flex;justify-content:space-between;gap:10px}.sample-count,.sample-tag{color:var(--amber);font-weight:700}.sample-size-block{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.sample-size-label{font-size:12px;color:var(--muted);font-weight:700}.sample-size-row{display:grid!important;grid-template-columns:repeat(6,1fr);gap:5px;flex:1;min-width:220px}.sample-size-btn{height:34px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);font-weight:800}.sample-size-btn.on{background:var(--amber);border-color:var(--amber);color:#241700}.sample-draw-btn{border-color:rgba(227,169,47,.65)!important}.sample-ids{font:11px ui-monospace,monospace;color:#f3d58f;line-height:1.65;word-break:break-word}.random-note{margin-top:-2px!important}.adj-on{border-color:var(--amber)!important;color:var(--amber)!important}.pt-adj{background:#6b7280!important;color:#fff!important;border-style:dashed!important}.pt-sample{box-shadow:0 0 0 4px rgba(227,169,47,.85),0 0 0 7px rgba(0,0,0,.35)!important;background:var(--amber)!important;color:#241700!important;z-index:8}.pt-harvest-numbered{min-width:31px!important;width:auto!important;padding:0 6px!important;overflow:visible!important}.pt-harvest-numbered em{font-size:10px!important;white-space:nowrap}.sample-star{position:absolute;left:-9px;top:-10px;font-style:normal;font-size:13px;color:#ffd76a;text-shadow:0 1px 2px #000;z-index:2}.pt-count-badge{position:absolute;left:50%;top:25px;transform:translateX(-50%);background:#0e1510;border:1px solid var(--rice);color:var(--ink);border-radius:999px;padding:1px 4px;font-size:8px;line-height:1.25;white-space:nowrap;font-weight:800}.pt-sample .pt-count-badge{border-color:var(--amber)}
+.pt-lodged{box-shadow:0 0 0 4px rgba(226,88,74,.85),0 0 0 7px rgba(0,0,0,.32)!important;z-index:7}.lodging-mark{position:absolute;right:-10px;top:-11px;width:22px;height:22px;border-radius:50%;background:var(--danger);border:2px solid #ffd4cf;color:white;font-style:normal;font-size:11px;line-height:18px;text-align:center;font-weight:900;text-shadow:0 1px 1px rgba(0,0,0,.35);z-index:3}.lodging-toggle{width:100%;height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-size:14px;font-weight:800;cursor:pointer}.lodging-toggle.on{border-color:var(--danger);background:rgba(226,88,74,.16);color:#ffb4aa}.lodging-hint{margin:-3px 0 0;font-size:11px;line-height:1.45;color:var(--muted);text-align:center}.prev-lodged{color:var(--danger);font-weight:800}.lodging-toggle:active{transform:scale(.99)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}.key:active,.stepper:active{transform:none;}}
 `;
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrorBoundary, null, React.createElement(FrameTillerTool)));</script>
