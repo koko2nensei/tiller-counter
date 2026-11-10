@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="分げつ計数">
 <meta name="theme-color" content="#0e1510">
-<title>分げつ・収穫計数（DSR）v21</title>
+<title>分げつ・収穫計数（DSR）v22</title>
 <style>html,body{margin:0;padding:0;background:#0e1510;-webkit-text-size-adjust:100%;}#root{min-height:100vh;}</style>
 </head>
 <body>
@@ -333,7 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v21-presence-history-restore";
+const VERSION = "v22-harvest-continuous-sampling";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = (n, r) => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_") + "-r" + String(r).replace(/[^A-Za-z0-9._-]/g, "_");
 const roundData = (f, r) => f && f.rounds && f.rounds[r] || {
@@ -1493,8 +1493,32 @@ function FrameEditor({
     }
     return Math.floor(Math.random() * maxExclusive);
   };
+  // 収穫時の品質調査株は、以前から継続して分げつ数を測定している株だけを候補にする。
+  // 条件: 収穫回より前の「分げつ」測定回で数値記録が2回以上あること。
+  const historicalTillerRecords = p => {
+    const currentIdx = roundIndex(round);
+    return (rounds || []).filter((r, i) => {
+      if (currentIdx >= 0 && i >= currentIdx) return false;
+      const kind = r.kind || (String(r.label || "").includes("収穫") ? "harvest" : "tiller");
+      if (kind === "harvest") return false;
+      if (p.createdRound && roundIndex(p.createdRound) > i) return false;
+      const rec = roundData(frame, r.id).counts[p.id];
+      if (!rec || !Number.isFinite(Number(rec.tillers))) return false;
+      if (statusState(p, r.id) === "missing") return false;
+      return true;
+    }).map(r => ({
+      roundId: r.id,
+      label: r.label || r.id,
+      value: Number(roundData(frame, r.id).counts[p.id].tillers)
+    }));
+  };
+  const harvestEligiblePoints = frame.points.filter(p => {
+    if (p.adjacent || p.excluded) return false;
+    if (!pointExistsByRound(p, round) || statusState(p, round) === "missing") return false;
+    return historicalTillerRecords(p).length >= 2;
+  });
   const chooseHarvestSamples = (n = harvestSampleTarget) => {
-    const ids = frame.points.filter(p => !p.adjacent && pointExistsByRound(p, round) && statusState(p, round) !== "missing").map(p => p.id);
+    const ids = harvestEligiblePoints.map(p => p.id);
     const shuffled = ids.slice();
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = secureRandomInt(i + 1);
@@ -1600,10 +1624,12 @@ function FrameEditor({
   }, n)))), /*#__PURE__*/React.createElement("button", {
     className: "btn-ghost sm sample-draw-btn",
     onClick: () => chooseHarvestSamples(harvestSampleTarget)
-  }, (frame.harvestSamples || []).length ? `${harvestSampleTarget}株で再抽選` : `${harvestSampleTarget}株をランダム選択`), (frame.harvestSamples || []).length > 0 && /*#__PURE__*/React.createElement("div", {className:"sample-ids"}, (frame.harvestSamples || []).map(id => {
+  }, (frame.harvestSamples || []).length ? `${harvestSampleTarget}株で再抽選` : `${harvestSampleTarget}株をランダム選択`), /*#__PURE__*/React.createElement("div", {className:"sample-eligibility"}, "抽出候補：", /*#__PURE__*/React.createElement("b", null, harvestEligiblePoints.length, "株"), "（過去の分げつ数が2回以上ある株）"), (frame.harvestSamples || []).length > 0 && /*#__PURE__*/React.createElement("div", {className:"sample-ids"}, (frame.harvestSamples || []).map(id => {
     const p = frame.points.find(x => x.id === id);
-    return p ? `稲${plantNumber(p)}（${id}）` : id;
-  }).join(" / ")), /*#__PURE__*/React.createElement("p", {className:"hint random-note"}, "枠内株のみから重複なしで抽選します。対応ブラウザでは暗号学的乱数 crypto.getRandomValues を使用します。"), /*#__PURE__*/React.createElement("button", {
+    if (!p) return id;
+    const nrec = historicalTillerRecords(p).length;
+    return `稲${plantNumber(p)}（${id}・過去${nrec}回）`;
+  }).join(" / ")), /*#__PURE__*/React.createElement("p", {className:"hint random-note"}, harvestEligiblePoints.length < harvestSampleTarget ? `条件を満たす株は${harvestEligiblePoints.length}株です。指定数に足りない場合は候補株のみを全て選びます。` : "以前から継続して測定した株（収穫前の分げつ数記録が2回以上）の中だけから、重複なしで抽選します。対応ブラウザでは crypto.getRandomValues を使用します。"), /*#__PURE__*/React.createElement("button", {
     className: "btn-ghost sm" + (harvestAddAdjacent ? " adj-on" : ""),
     onClick: () => { setHarvestAddAdjacent(x => !x); setAddNewPlant(false); setRestoreLegacyId(null); }
   }, harvestAddAdjacent ? "隣接株追加：ON（写真上をタップ）" : "＋ 隣接株を追加"), harvestAddAdjacent && /*#__PURE__*/React.createElement("p", {className:"hint"}, "枠の外側にある収穫対象株を写真上でタップ。A01, A02…として枠内株と分けて保存します。")), !hasImg ? /*#__PURE__*/React.createElement("button", {
@@ -2312,7 +2338,7 @@ const css = `
 .modal-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 
 
-.mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mode-btn{height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-weight:700;font-size:14px}.mode-btn.on{background:var(--rice);border-color:var(--rice);color:#0c1a08}.mode-btn.harvest.on{background:var(--amber);border-color:var(--amber);color:#241700}.harvest-banner{background:rgba(227,169,47,.12);border:1px solid rgba(227,169,47,.55);border-radius:12px;padding:10px 12px;color:#f3d58f;font-size:12px;line-height:1.5}.harvest-tools{background:rgba(227,169,47,.10);border:1px solid rgba(227,169,47,.45);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:13px}.harvest-tools>div:first-child{display:flex;justify-content:space-between;gap:10px}.sample-count,.sample-tag{color:var(--amber);font-weight:700}.sample-size-block{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.sample-size-label{font-size:12px;color:var(--muted);font-weight:700}.sample-size-row{display:grid!important;grid-template-columns:repeat(6,1fr);gap:5px;flex:1;min-width:220px}.sample-size-btn{height:34px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);font-weight:800}.sample-size-btn.on{background:var(--amber);border-color:var(--amber);color:#241700}.sample-draw-btn{border-color:rgba(227,169,47,.65)!important}.sample-ids{font:11px ui-monospace,monospace;color:#f3d58f;line-height:1.65;word-break:break-word}.random-note{margin-top:-2px!important}.adj-on{border-color:var(--amber)!important;color:var(--amber)!important}.pt-adj{background:#6b7280!important;color:#fff!important;border-style:dashed!important}.pt-sample{box-shadow:0 0 0 4px rgba(227,169,47,.85),0 0 0 7px rgba(0,0,0,.35)!important;background:var(--amber)!important;color:#241700!important;z-index:8}.pt-harvest-numbered{min-width:31px!important;width:auto!important;padding:0 6px!important;overflow:visible!important}.pt-harvest-numbered em{font-size:10px!important;white-space:nowrap}.sample-star{position:absolute;left:-9px;top:-10px;font-style:normal;font-size:13px;color:#ffd76a;text-shadow:0 1px 2px #000;z-index:2}.pt-count-badge{position:absolute;left:50%;top:25px;transform:translateX(-50%);background:#0e1510;border:1px solid var(--rice);color:var(--ink);border-radius:999px;padding:1px 4px;font-size:8px;line-height:1.25;white-space:nowrap;font-weight:800}.pt-sample .pt-count-badge{border-color:var(--amber)}
+.mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mode-btn{height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-weight:700;font-size:14px}.mode-btn.on{background:var(--rice);border-color:var(--rice);color:#0c1a08}.mode-btn.harvest.on{background:var(--amber);border-color:var(--amber);color:#241700}.harvest-banner{background:rgba(227,169,47,.12);border:1px solid rgba(227,169,47,.55);border-radius:12px;padding:10px 12px;color:#f3d58f;font-size:12px;line-height:1.5}.harvest-tools{background:rgba(227,169,47,.10);border:1px solid rgba(227,169,47,.45);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:13px}.harvest-tools>div:first-child{display:flex;justify-content:space-between;gap:10px}.sample-count,.sample-tag{color:var(--amber);font-weight:700}.sample-size-block{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.sample-size-label{font-size:12px;color:var(--muted);font-weight:700}.sample-size-row{display:grid!important;grid-template-columns:repeat(6,1fr);gap:5px;flex:1;min-width:220px}.sample-size-btn{height:34px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);font-weight:800}.sample-size-btn.on{background:var(--amber);border-color:var(--amber);color:#241700}.sample-draw-btn{border-color:rgba(227,169,47,.65)!important}.sample-ids{font:11px ui-monospace,monospace;color:#f3d58f;line-height:1.65;word-break:break-word}.random-note{margin-top:-2px!important}.sample-eligibility{font-size:12px;color:var(--muted);line-height:1.5}.sample-eligibility b{color:var(--amber);font-size:14px}.adj-on{border-color:var(--amber)!important;color:var(--amber)!important}.pt-adj{background:#6b7280!important;color:#fff!important;border-style:dashed!important}.pt-sample{box-shadow:0 0 0 4px rgba(227,169,47,.85),0 0 0 7px rgba(0,0,0,.35)!important;background:var(--amber)!important;color:#241700!important;z-index:8}.pt-harvest-numbered{min-width:31px!important;width:auto!important;padding:0 6px!important;overflow:visible!important}.pt-harvest-numbered em{font-size:10px!important;white-space:nowrap}.sample-star{position:absolute;left:-9px;top:-10px;font-style:normal;font-size:13px;color:#ffd76a;text-shadow:0 1px 2px #000;z-index:2}.pt-count-badge{position:absolute;left:50%;top:25px;transform:translateX(-50%);background:#0e1510;border:1px solid var(--rice);color:var(--ink);border-radius:999px;padding:1px 4px;font-size:8px;line-height:1.25;white-space:nowrap;font-weight:800}.pt-sample .pt-count-badge{border-color:var(--amber)}
 .pt-missing{background:rgba(147,167,149,.14)!important;color:var(--muted)!important;border-color:var(--muted)!important;border-style:dashed!important;opacity:.72}.pt-missing em{font-size:9px}.presence-tools{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px}.presence-title{font-size:13px;font-weight:800}.add-on{border-color:var(--rice)!important;color:var(--rice)!important}.restore-block{display:flex;flex-direction:column;gap:6px}.restore-label{font-size:11px;color:var(--muted)}.restore-buttons{display:flex;gap:6px;flex-wrap:wrap}.restore-chip{min-height:34px;padding:5px 9px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--ink);font-size:11px;font-weight:700}.restore-chip.on{border-color:var(--amber);color:var(--amber)}.restore-hint{color:var(--amber)!important}.missing-banner{background:rgba(147,167,149,.12);border:1px dashed var(--muted);border-radius:10px;padding:8px 10px;color:var(--muted);font-size:12px;line-height:1.5}.cs-missing{height:40px;border:1px dashed var(--muted);border-radius:10px;background:transparent;color:var(--muted);padding:0 10px;font-weight:700}.cs-exclude{height:38px;border:0;background:none;color:var(--danger);font-size:12px;text-decoration:underline}.exclude-confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted)}
 .pt-lodged{border-color:var(--danger)!important;}.lodging-toggle{width:100%;height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-size:14px;font-weight:800;cursor:pointer}.lodging-toggle.on{border-color:var(--danger);background:rgba(226,88,74,.16);color:#ffb4aa}.lodging-hint{margin:-3px 0 0;font-size:11px;line-height:1.45;color:var(--muted);text-align:center}.prev-lodged{color:var(--danger);font-weight:800}.lodging-toggle:active{transform:scale(.99)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}.key:active,.stepper:active{transform:none;}}
