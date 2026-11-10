@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="分げつ計数">
 <meta name="theme-color" content="#0e1510">
-<title>分げつ・収穫計数（DSR）v16</title>
+<title>分げつ・収穫計数（DSR）v21</title>
 <style>html,body{margin:0;padding:0;background:#0e1510;-webkit-text-size-adjust:100%;}#root{min-height:100vh;}</style>
 </head>
 <body>
@@ -333,7 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v18-lodging";
+const VERSION = "v21-presence-history-restore";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = (n, r) => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_") + "-r" + String(r).replace(/[^A-Za-z0-9._-]/g, "_");
 const roundData = (f, r) => f && f.rounds && f.rounds[r] || {
@@ -712,7 +712,15 @@ function FrameTillerTool() {
           });
         } else {
           const pmap = new Map(cur.points.map(p => [p.id, p]));
-          for (const p of validPts) pmap.set(p.id, p);
+          for (const p of validPts) {
+            const oldp = pmap.get(p.id) || {};
+            pmap.set(p.id, {
+              ...oldp, ...p,
+              positions: {...(oldp.positions || {}), ...(p.positions || {})},
+              statuses: {...(oldp.statuses || {}), ...(p.statuses || {})},
+              excluded: p.excluded != null ? p.excluded : oldp.excluded
+            });
+          }
           const points = Array.from(pmap.values());
           const r2 = {
             ...(cur.rounds || {})
@@ -918,8 +926,15 @@ function FramesList({
   const [newRoundLabel, setNewRoundLabel] = useState("");
   const [addingRound, setAddingRound] = useState(false);
   const curLabel = (rounds.find(r => r.id === currentRound) || {}).label || currentRound;
-  const roundMeasured = frames.reduce((a, f) => a + Object.keys(roundData(f, currentRound).counts).length, 0);
-  const totalPts = frames.reduce((a, f) => a + f.points.length, 0);
+  const roundIdx = rid => rounds.findIndex(r => r.id === rid);
+  const activeAtRound = (p, rid) => {
+    if (!p || p.excluded) return false;
+    if (!p.createdRound) return true;
+    const ci = roundIdx(p.createdRound), ri = roundIdx(rid);
+    return ci < 0 || ri < 0 || ci <= ri;
+  };
+  const roundMeasured = frames.reduce((a, f) => a + Object.keys(roundData(f, currentRound).counts).filter(id => f.points.some(p => p.id === id && activeAtRound(p, currentRound))).length, 0);
+  const totalPts = frames.reduce((a, f) => a + f.points.filter(p => activeAtRound(p, currentRound)).length, 0);
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
   }, /*#__PURE__*/React.createElement("header", {
@@ -1008,8 +1023,8 @@ function FramesList({
   }, "作成"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("ul", {
     className: "frame-grid"
   }, frames.map(f => {
-    const total = f.points.length;
-    const counted = Object.keys(roundData(f, currentRound).counts).length;
+    const total = f.points.filter(p => activeAtRound(p, currentRound)).length;
+    const counted = Object.keys(roundData(f, currentRound).counts).filter(id => f.points.some(p => p.id === id && activeAtRound(p, currentRound))).length;
     return /*#__PURE__*/React.createElement("li", {
       key: f.num
     }, /*#__PURE__*/React.createElement("button", {
@@ -1077,6 +1092,8 @@ function FrameEditor({
   const [loadingImg, setLoadingImg] = useState(true);
   const [sel, setSel] = useState(null); // selected point id (meas: opens counter)
   const [harvestAddAdjacent, setHarvestAddAdjacent] = useState(false);
+  const [addNewPlant, setAddNewPlant] = useState(false);
+  const [restoreLegacyId, setRestoreLegacyId] = useState(null);
   const [harvestSampleTarget, setHarvestSampleTarget] = useState(() => {
     const n = Array.isArray(frame.harvestSamples) ? frame.harvestSamples.length : 0;
     return n >= 5 && n <= 10 ? n : 10;
@@ -1193,6 +1210,36 @@ function FrameEditor({
       r
     };
   };
+  // 各稲は測定回ごとに存在状態を持つ。
+  // present=確認、missing=その回では確認できず。excluded は誤登録として除外。
+  // 位置は「最後に実際に確認できた回」を参照し、missing の回は飛ばす。
+  const roundIndex = rid => (rounds || []).findIndex(r => r.id === rid);
+  const statusState = (p, rid) => p && p.statuses && p.statuses[rid] ? p.statuses[rid].state : null;
+  const pointExistsByRound = (p, rid = round) => {
+    if (!p || p.excluded) return false;
+    if (!p.createdRound) return true;
+    const ci = roundIndex(p.createdRound), ri = roundIndex(rid);
+    return ci < 0 || ri < 0 || ci <= ri;
+  };
+  const latestPointPos = p => {
+    if (!p || !pointExistsByRound(p, round)) return null;
+    const pos = p.positions || {};
+    const idx = roundIndex(round);
+    const start = idx >= 0 ? idx : (rounds || []).length - 1;
+    for (let i = start; i >= 0; i--) {
+      const rid = rounds[i].id;
+      if (p.createdRound && roundIndex(p.createdRound) > i) continue;
+      const st = statusState(p, rid);
+      if (st === "missing") continue;
+      const rec = pos[rid];
+      const countedHere = roundData(frame, rid).counts[p.id] != null;
+      if (st === "present" || countedHere || rec) {
+        if (rec && Number.isFinite(rec.u) && Number.isFinite(rec.v)) return rec;
+        if (Number.isFinite(p.u) && Number.isFinite(p.v)) return {u: p.u, v: p.v};
+      }
+    }
+    return Number.isFinite(p.u) && Number.isFinite(p.v) ? {u: p.u, v: p.v} : null;
+  };
   const hitPoint = (fx, fy, r) => {
     if (!cornersDone) return null;
     const tx = fx * r.width,
@@ -1200,8 +1247,11 @@ function FrameEditor({
     let best = null,
       bestD = 28; // px radius
     for (const p of frame.points) {
-      if (!Number.isFinite(p.u) || !Number.isFinite(p.v)) continue;
-      const fr = applyM(dispM, p.u, p.v);
+      if (p.excluded) continue;
+      if (phase === "meas" && !pointExistsByRound(p, round)) continue;
+      const pos = phase === "prep" ? (Number.isFinite(p.u) && Number.isFinite(p.v) ? p : null) : latestPointPos(p);
+      if (!pos) continue;
+      const fr = applyM(dispM, pos.u, pos.v);
       const d = Math.hypot(fr.fx * r.width - tx, fr.fy * r.height - ty);
       if (d < bestD) {
         bestD = d;
@@ -1252,11 +1302,21 @@ function FrameEditor({
       const uv = fracToUV(corners, fx, fy);
       updateFrame(num, f => ({
         ...f,
-        points: f.points.map(p => p.id === g.id ? {
+        points: f.points.map(p => p.id === g.id ? (phase === "meas" ? {
+          ...p,
+          positions: {
+            ...(p.positions || {}),
+            [round]: {u: uv.u, v: uv.v, ts: stamp()}
+          },
+          statuses: {
+            ...(p.statuses || {}),
+            [round]: {state: "present", ts: stamp()}
+          }
+        } : {
           ...p,
           u: uv.u,
           v: uv.v
-        } : p)
+        }) : p)
       }));
     }
   };
@@ -1282,27 +1342,35 @@ function FrameEditor({
         }]
       }));
     } else if (g.kind === "add" && !g.moved) {
-      if (phase === "prep" || (phase === "meas" && roundKind === "harvest" && harvestAddAdjacent)) {
-        const {
-          fx,
-          fy
-        } = frac(e);
+      const canAdd = phase === "prep" || restoreLegacyId || (phase === "meas" && addNewPlant) || (phase === "meas" && roundKind === "harvest" && harvestAddAdjacent);
+      if (canAdd) {
+        const {fx, fy} = frac(e);
         const uv = fracToUV(corners, fx, fy);
         setSel(null);
         updateFrame(num, f => {
-          const isAdj = phase === "meas" && roundKind === "harvest";
+          const isAdj = phase === "meas" && roundKind === "harvest" && harvestAddAdjacent && !restoreLegacyId && !addNewPlant;
           const aseq = f.points.filter(p => p.adjacent).length + 1;
+          const newId = restoreLegacyId || (isAdj ? `${num}-A${String(aseq).padStart(2, "0")}` : `${num}-${String(f.seq).padStart(2, "0")}`);
+          if (f.points.some(p => p.id === newId)) return f;
+          const isNewInRound = phase === "meas" && !restoreLegacyId && !isAdj;
+          const pnew = {
+            id: newId,
+            u: uv.u,
+            v: uv.v,
+            adjacent: isAdj || undefined,
+            restoredFromLegacy: restoreLegacyId ? true : undefined,
+            createdRound: isNewInRound ? round : undefined,
+            positions: phase === "meas" ? {[round]: {u: uv.u, v: uv.v, ts: stamp()}} : undefined,
+            statuses: phase === "meas" ? {[round]: {state: "present", ts: stamp()}} : undefined
+          };
           return {
             ...f,
-            points: [...f.points, {
-              id: isAdj ? `${num}-A${String(aseq).padStart(2, "0")}` : `${num}-${String(f.seq).padStart(2, "0")}`,
-              u: uv.u,
-              v: uv.v,
-              adjacent: isAdj || undefined
-            }],
-            seq: isAdj ? f.seq : f.seq + 1
+            points: [...f.points, pnew],
+            seq: isAdj || restoreLegacyId ? f.seq : f.seq + 1
           };
         });
+        setRestoreLegacyId(null);
+        setAddNewPlant(false);
       }
     } else if (g.kind === "point" && !g.moved) {
       setSel(g.id);
@@ -1328,27 +1396,36 @@ function FrameEditor({
       measCorners: roundData(f, round).measCorners.slice(0, -1)
     }));
   };
-  const deletePoint = id => {
+  const markMissing = id => {
     updateFrame(num, f => {
-      const rounds = {};
-      for (const [rid, r] of Object.entries(f.rounds || {})) {
-        const c = {
-          ...r.counts
-        };
-        delete c[id];
-        rounds[rid] = {
-          ...r,
-          counts: c
-        };
-      }
+      const base = roundData(f, round);
+      const counts = {...base.counts};
+      delete counts[id];
       return {
         ...f,
-        points: f.points.filter(p => p.id !== id),
+        points: f.points.map(p => p.id === id ? {
+          ...p,
+          statuses: {...(p.statuses || {}), [round]: {state: "missing", ts: stamp()}}
+        } : p),
         harvestSamples: (f.harvestSamples || []).filter(x => x !== id),
-        rounds
+        rounds: {...f.rounds, [round]: {...base, counts}}
       };
     });
     setSel(null);
+  };
+  const excludePoint = id => {
+    updateFrame(num, f => ({
+      ...f,
+      points: f.points.map(p => p.id === id ? {...p, excluded: true, excludedAt: stamp()} : p),
+      harvestSamples: (f.harvestSamples || []).filter(x => x !== id)
+    }));
+    setSel(null);
+  };
+  const restoreExcludedPoint = id => {
+    updateFrame(num, f => ({
+      ...f,
+      points: f.points.map(p => p.id === id ? {...p, excluded: false, restoredAt: stamp()} : p)
+    }));
   };
   const setCount = (id, tillers, lodged = false) => {
     updateFrame(num, f => updRound(f, {
@@ -1361,6 +1438,7 @@ function FrameEditor({
         }
       }
     }));
+    updateFrame(num, f => ({...f, points: f.points.map(p => p.id === id ? {...p, statuses: {...(p.statuses || {}), [round]: {state: "present", ts: stamp()}}} : p)}));
   };
   const saveAndNext = (id, tillers, lodged = false) => {
     updateFrame(num, f => updRound(f, {
@@ -1373,7 +1451,8 @@ function FrameEditor({
         }
       }
     }));
-    const ordered = frame.points.filter(p => Number.isFinite(p.u) && Number.isFinite(p.v)).slice().sort((a, b) => a.v - b.v || a.u - b.u);
+    updateFrame(num, f => ({...f, points: f.points.map(p => p.id === id ? {...p, statuses: {...(p.statuses || {}), [round]: {state: "present", ts: stamp()}}} : p)}));
+    const ordered = frame.points.filter(p => pointExistsByRound(p, round) && statusState(p, round) !== "missing" && Number.isFinite(p.u) && Number.isFinite(p.v)).slice().sort((a, b) => a.v - b.v || a.u - b.u);
     const done = new Set(Object.keys(rd.counts));
     done.add(id);
     const next = ordered.find(p => !done.has(p.id));
@@ -1384,8 +1463,9 @@ function FrameEditor({
   useEffect(() => {
     if (phase !== "meas" || !sel || !cornersDone || !wrapRef.current || !screenRef.current) return;
     const p = frame.points.find(pt => pt.id === sel);
-    if (!p || !Number.isFinite(p.u) || !Number.isFinite(p.v)) return;
-    const fr = applyM(dispM, p.u, p.v);
+    const pos = latestPointPos(p);
+    if (!pos) return;
+    const fr = applyM(dispM, pos.u, pos.v);
     const wrapRect = wrapRef.current.getBoundingClientRect();
     const pointY = wrapRect.top + fr.fy * wrapRect.height;
     const targetY = window.innerHeight * 0.28;
@@ -1400,7 +1480,7 @@ function FrameEditor({
         screenRef.current.scrollTop += delta;
       }
     }
-  }, [sel]); // eslint-disable-line
+  }, [sel, frame.points, round]); // eslint-disable-line
 
   const secureRandomInt = maxExclusive => {
     if (maxExclusive <= 1) return 0;
@@ -1414,7 +1494,7 @@ function FrameEditor({
     return Math.floor(Math.random() * maxExclusive);
   };
   const chooseHarvestSamples = (n = harvestSampleTarget) => {
-    const ids = frame.points.filter(p => !p.adjacent).map(p => p.id);
+    const ids = frame.points.filter(p => !p.adjacent && pointExistsByRound(p, round) && statusState(p, round) !== "missing").map(p => p.id);
     const shuffled = ids.slice();
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = secureRandomInt(i + 1);
@@ -1428,9 +1508,19 @@ function FrameEditor({
     const m = String(p.id).match(/-(\d+)$/);
     return m ? m[1] : String(frame.points.filter(x => !x.adjacent).findIndex(x => x.id === p.id) + 1).padStart(2, "0");
   };
-  const counted = Object.keys(rd.counts).length;
+  const activePoints = frame.points.filter(p => pointExistsByRound(p, round));
+  const counted = Object.keys(rd.counts).filter(id => activePoints.some(p => p.id === id)).length;
   const harvestSet = new Set(frame.harvestSamples || []);
   const selPoint = frame.points.find(p => p.id === sel);
+  const excludedPoints = frame.points.filter(p => p.excluded);
+  const existingNumeric = new Set(frame.points.filter(p => !p.adjacent).map(p => {
+    const m = String(p.id).match(/-(\d+)$/);
+    return m ? parseInt(m[1], 10) : null;
+  }).filter(Number.isFinite));
+  const legacyMissingIds = [];
+  for (let i = 1; i < (frame.seq || 1); i++) {
+    if (!existingNumeric.has(i)) legacyMissingIds.push(`${num}-${String(i).padStart(2, "0")}`);
+  }
   const prevInfo = pid => {
     const idx = (rounds || []).findIndex(r => r.id === round);
     for (let i = idx - 1; i >= 0; i--) {
@@ -1490,9 +1580,18 @@ function FrameEditor({
     }
   }, roundKind === "harvest" ? "収穫（穂数）" : "計測（分げつ数）")), /*#__PURE__*/React.createElement("div", {
     className: "guide"
-  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整、タップで選択→削除。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : roundKind === "harvest" ? "各稲の番号は常時表示されます。タップして穂数を記録。★＝不稔率等を調べる採取対象。袋ラベルは点ID（例：14-03）と一致させてください。" : "点をタップ→数字→「記録して次へ」。橙＝前回値、緑＝今回。ズレは点をドラッグで微調整。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
+  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整。誤登録はデータを消さず『除外』として残します。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : roundKind === "harvest" ? "各稲の番号は常時表示されます。タップして穂数を記録。★＝不稔率等を調べる採取対象。袋ラベルは点ID（例：14-03）と一致させてください。" : "点をタップ→数字→「記録して次へ」。見つからない株は『今回確認できず』にします。位置は最後に実際に確認できた測定回を参照します。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
     className: "warn"
-  }, "準備段階の四隅が未設定です。まず「準備」で四隅と稲位置を登録してください。"), phase === "meas" && roundKind === "harvest" && frame.points.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "準備段階の四隅が未設定です。まず「準備」で四隅と稲位置を登録してください。"), phase === "meas" && /*#__PURE__*/React.createElement("div", {
+    className: "presence-tools"
+  }, /*#__PURE__*/React.createElement("div", {className:"presence-title"}, "個体の追加・復元"), /*#__PURE__*/React.createElement("button", {
+    className: "btn-ghost sm" + (addNewPlant ? " add-on" : ""),
+    onClick: () => { setAddNewPlant(x => !x); setRestoreLegacyId(null); setHarvestAddAdjacent(false); }
+  }, addNewPlant ? "新しい稲追加：ON（写真上をタップ）" : "＋ 今回から新しい稲を追加"), excludedPoints.length > 0 && /*#__PURE__*/React.createElement("div", {className:"restore-block"}, /*#__PURE__*/React.createElement("span", {className:"restore-label"}, "誤登録として除外中"), /*#__PURE__*/React.createElement("div", {className:"restore-buttons"}, excludedPoints.map(p => /*#__PURE__*/React.createElement("button", {
+    key: p.id, className:"restore-chip", onClick: () => restoreExcludedPoint(p.id)
+  }, p.id, " を復元")))), legacyMissingIds.length > 0 && /*#__PURE__*/React.createElement("div", {className:"restore-block"}, /*#__PURE__*/React.createElement("span", {className:"restore-label"}, "過去に削除した可能性のあるID"), /*#__PURE__*/React.createElement("div", {className:"restore-buttons"}, legacyMissingIds.map(id => /*#__PURE__*/React.createElement("button", {
+    key: id, className:"restore-chip" + (restoreLegacyId === id ? " on" : ""), onClick: () => { setRestoreLegacyId(id); setAddNewPlant(false); setHarvestAddAdjacent(false); }
+  }, id))), restoreLegacyId && /*#__PURE__*/React.createElement("p", {className:"hint restore-hint"}, restoreLegacyId, " を復元します。現在の写真上で、その稲の位置をタップしてください。"))), phase === "meas" && roundKind === "harvest" && frame.points.length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "harvest-tools"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("b", null, "品質調査用の採取株"), /*#__PURE__*/React.createElement("span", {className:"sample-count"}, (frame.harvestSamples || []).length, "株")), /*#__PURE__*/React.createElement("div", {className:"sample-size-block"}, /*#__PURE__*/React.createElement("span", {className:"sample-size-label"}, "抽出数"), /*#__PURE__*/React.createElement("div", {className:"sample-size-row"}, [5,6,7,8,9,10].map(n => /*#__PURE__*/React.createElement("button", {
     key: n,
@@ -1506,7 +1605,7 @@ function FrameEditor({
     return p ? `稲${plantNumber(p)}（${id}）` : id;
   }).join(" / ")), /*#__PURE__*/React.createElement("p", {className:"hint random-note"}, "枠内株のみから重複なしで抽選します。対応ブラウザでは暗号学的乱数 crypto.getRandomValues を使用します。"), /*#__PURE__*/React.createElement("button", {
     className: "btn-ghost sm" + (harvestAddAdjacent ? " adj-on" : ""),
-    onClick: () => setHarvestAddAdjacent(x => !x)
+    onClick: () => { setHarvestAddAdjacent(x => !x); setAddNewPlant(false); setRestoreLegacyId(null); }
   }, harvestAddAdjacent ? "隣接株追加：ON（写真上をタップ）" : "＋ 隣接株を追加"), harvestAddAdjacent && /*#__PURE__*/React.createElement("p", {className:"hint"}, "枠の外側にある収穫対象株を写真上でタップ。A01, A02…として枠内株と分けて保存します。")), !hasImg ? /*#__PURE__*/React.createElement("button", {
     className: "btn-primary",
     onClick: () => pickPhoto(phase)
@@ -1545,9 +1644,13 @@ function FrameEditor({
       top: `${c.fy * 100}%`
     }
   }, /*#__PURE__*/React.createElement("b", null, i + 1))), cornersDone && frame.points.map((p, i) => {
-    if (!Number.isFinite(p.u) || !Number.isFinite(p.v)) return null;
-    const fr = applyM(dispM, p.u, p.v);
+    if (p.excluded) return null;
+    if (phase === "meas" && !pointExistsByRound(p, round)) return null;
+    const pos = phase === "prep" ? (Number.isFinite(p.u) && Number.isFinite(p.v) ? p : null) : latestPointPos(p);
+    if (!pos) return null;
+    const fr = applyM(dispM, pos.u, pos.v);
     const isCounted = rd.counts[p.id] != null;
+    const currentPresence = phase === "meas" ? statusState(p, round) : null;
     const isSel = p.id === sel;
     const fixedPlantLabel = p.adjacent ? plantNumber(p) : plantNumber(p);
     let cls = p.adjacent ? " pt-adj" : " pt-prep",
@@ -1567,6 +1670,7 @@ function FrameEditor({
         }
       }
     }
+    if (phase === "meas" && currentPresence === "missing") { cls = " pt-missing"; label = fixedPlantLabel; }
     const isHarvestSample = roundKind === "harvest" && harvestSet.has(p.id);
     const harvestCount = roundKind === "harvest" && isCounted ? rd.counts[p.id].tillers : null;
     const isLodged = roundKind !== "harvest" && isCounted && !!rd.counts[p.id].lodged;
@@ -1578,7 +1682,7 @@ function FrameEditor({
         top: `${fr.fy * 100}%`
       },
       title: p.adjacent ? `隣接株 ${p.id}` : `稲${fixedPlantLabel} / ${p.id}`
-    }, isHarvestSample && /*#__PURE__*/React.createElement("i", {className:"sample-star"}, "★"), isLodged && /*#__PURE__*/React.createElement("i", {className:"lodging-mark"}, "倒"), /*#__PURE__*/React.createElement("em", null, p.adjacent ? fixedPlantLabel : label), harvestCount != null && /*#__PURE__*/React.createElement("b", {className:"pt-count-badge"}, harvestCount, "穂"));
+    }, isHarvestSample && /*#__PURE__*/React.createElement("i", {className:"sample-star"}, "★"), /*#__PURE__*/React.createElement("em", null, p.adjacent ? fixedPlantLabel : label), harvestCount != null && /*#__PURE__*/React.createElement("b", {className:"pt-count-badge"}, harvestCount, "穂"));
   }))), /*#__PURE__*/React.createElement("div", {
     className: "ed-rotate"
   }, /*#__PURE__*/React.createElement("span", {
@@ -1616,8 +1720,8 @@ function FrameEditor({
     className: "sheet-btns"
   }, /*#__PURE__*/React.createElement("button", {
     className: "btn-danger sm",
-    onClick: () => deletePoint(selPoint.id)
-  }, "削除"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => excludePoint(selPoint.id)
+  }, "誤登録として除外"), /*#__PURE__*/React.createElement("button", {
     className: "btn-ghost sm",
     onClick: () => setSel(null)
   }, "閉じる")))), phase === "meas" && selPoint && /*#__PURE__*/React.createElement(CounterSheet, {
@@ -1626,8 +1730,9 @@ function FrameEditor({
     initial: rd.counts[selPoint.id]?.tillers ?? 0,
     initialLodged: !!rd.counts[selPoint.id]?.lodged,
     counted: counted,
-    total: frame.points.length,
+    total: activePoints.length,
     prev: prevInfo(selPoint.id),
+    initialMissing: statusState(selPoint, round) === "missing",
     unitLabel: roundKind === "harvest" ? "穂" : "分げつ",
     showLodging: roundKind !== "harvest",
     isSample: roundKind === "harvest" && harvestSet.has(selPoint.id),
@@ -1636,7 +1741,8 @@ function FrameEditor({
       setCount(selPoint.id, v, lodged);
       setSel(null);
     },
-    onDelete: () => deletePoint(selPoint.id),
+    onMissing: () => markMissing(selPoint.id),
+    onExclude: () => excludePoint(selPoint.id),
     onClose: () => setSel(null)
   }));
 }
@@ -1649,17 +1755,19 @@ function CounterSheet({
   counted,
   total,
   prev,
+  initialMissing,
   unitLabel,
   showLodging,
   isSample,
   onSaveNext,
   onSaveClose,
   onClose,
-  onDelete
+  onMissing,
+  onExclude
 }) {
   const [v, setV] = useState(initial);
   const [lodged, setLodged] = useState(!!initialLodged);
-  const [confirmDel, setConfirmDel] = useState(false);
+  const [confirmExclude, setConfirmExclude] = useState(false);
   const digit = d => setV(x => Math.min(MAX_TILLERS, x * 10 + d));
   return /*#__PURE__*/React.createElement("div", {
     className: "sheet counter-sheet",
@@ -1675,7 +1783,7 @@ function CounterSheet({
     onClick: onClose
   }, "✕")), prev != null && /*#__PURE__*/React.createElement("div", {
     className: "cs-prev"
-  }, "前回（", prev.label, "）: ", /*#__PURE__*/React.createElement("b", null, prev.tillers), " 本", prev.lodged && /*#__PURE__*/React.createElement("span", {className:"prev-lodged"}, " ・ 倒伏")), showLodging && /*#__PURE__*/React.createElement("button", {
+  }, "前回（", prev.label, "）: ", /*#__PURE__*/React.createElement("b", null, prev.tillers), " 本", prev.lodged && /*#__PURE__*/React.createElement("span", {className:"prev-lodged"}, " ・ 倒伏")), initialMissing && /*#__PURE__*/React.createElement("div", {className:"missing-banner"}, "この測定回では『確認できず』になっています。見つかった場合は分げつ数を記録すれば自動的に復帰します。"), showLodging && /*#__PURE__*/React.createElement("button", {
     className: "lodging-toggle" + (lodged ? " on" : ""),
     onClick: () => setLodged(x => !x),
     "aria-pressed": lodged
@@ -1718,18 +1826,21 @@ function CounterSheet({
   }, /*#__PURE__*/React.createElement("button", {
     className: "btn-ghost sm",
     onClick: () => onSaveClose(v, lodged)
-  }, "記録して閉じる"), confirmDel ? /*#__PURE__*/React.createElement("span", {
-    className: "cs-del-confirm"
-  }, "削除？", /*#__PURE__*/React.createElement("button", {
+  }, "記録して閉じる"), /*#__PURE__*/React.createElement("button", {
+    className: "cs-missing",
+    onClick: onMissing
+  }, "今回は確認できず")), confirmExclude ? /*#__PURE__*/React.createElement("div", {
+    className: "cs-del-confirm exclude-confirm"
+  }, "誤登録として除外しますか？過去の記録は消えません。", /*#__PURE__*/React.createElement("button", {
     className: "link-danger",
-    onClick: onDelete
-  }, "する"), /*#__PURE__*/React.createElement("button", {
+    onClick: onExclude
+  }, "除外する"), /*#__PURE__*/React.createElement("button", {
     className: "link-quiet",
-    onClick: () => setConfirmDel(false)
+    onClick: () => setConfirmExclude(false)
   }, "やめる")) : /*#__PURE__*/React.createElement("button", {
-    className: "cs-delete",
-    onClick: () => setConfirmDel(true)
-  }, "この点を削除")));
+    className: "cs-exclude",
+    onClick: () => setConfirmExclude(true)
+  }, "誤登録として除外"));
 }
 
 // ── DATA ─────────────────────────────────────────────────────
@@ -1963,19 +2074,36 @@ function buildCsv(session, frames, rounds) {
     const s = String(v ?? "");
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const rlabel = {};
+  const rlabel = {}, rkind = {};
   (rounds || []).forEach(r => {
     rlabel[r.id] = r.label;
+    rkind[r.id] = r.kind || (String(r.label || "").includes("収穫") ? "harvest" : "tiller");
   });
-  const rkind = {};
-  (rounds || []).forEach(r => { rkind[r.id] = r.kind || (String(r.label || "").includes("収穫") ? "harvest" : "tiller"); });
-  const rows = [["session", "frame", "point_id", "u", "v", "round", "round_label", "measure_type", "count", "unit", "lodging", "quality_sample", "adjacent_plant", "recorded_at"]];
+  const rows = [["session", "frame", "point_id", "u", "v", "round", "round_label", "measure_type", "presence_state", "count", "unit", "lodging", "quality_sample", "adjacent_plant", "created_round", "excluded", "recorded_at"]];
   for (const f of frames) for (const p of f.points) {
-    for (const [rid, rd] of Object.entries(f.rounds || {})) {
-      const rec = rd.counts[p.id];
-      if (!rec) continue;
+    const rids = new Set([...Object.keys(f.rounds || {}), ...Object.keys(p.statuses || {})]);
+    for (const rid of rids) {
+      const rd0 = roundData(f, rid);
+      const rec = rd0.counts[p.id];
+      const stRec = p.statuses && p.statuses[rid];
+      if (!rec && !stRec) continue;
       const kind = rkind[rid] || "tiller";
-      rows.push([session, f.num, p.id, Number.isFinite(p.u) ? p.u.toFixed(4) : "", Number.isFinite(p.v) ? p.v.toFixed(4) : "", rid, rlabel[rid] || rid, kind, rec.tillers, kind === "harvest" ? "panicles" : "tillers", kind === "harvest" ? 0 : (rec.lodged ? 1 : 0), (f.harvestSamples || []).includes(p.id) ? 1 : 0, p.adjacent ? 1 : 0, rec.ts].map(esc));
+      const pos = p.positions && p.positions[rid] ? p.positions[rid] : p;
+      const presence = stRec && stRec.state ? stRec.state : (rec ? "present" : "");
+      rows.push([
+        session, f.num, p.id,
+        Number.isFinite(pos.u) ? pos.u.toFixed(4) : "",
+        Number.isFinite(pos.v) ? pos.v.toFixed(4) : "",
+        rid, rlabel[rid] || rid, kind, presence,
+        rec ? rec.tillers : "",
+        kind === "harvest" ? "panicles" : "tillers",
+        rec && kind !== "harvest" ? (rec.lodged ? 1 : 0) : "",
+        (f.harvestSamples || []).includes(p.id) ? 1 : 0,
+        p.adjacent ? 1 : 0,
+        p.createdRound || "",
+        p.excluded ? 1 : 0,
+        rec && rec.ts || stRec && stRec.ts || ""
+      ].map(esc));
     }
   }
   return rows.map(r => r.join(",")).join("\n");
@@ -1983,7 +2111,7 @@ function buildCsv(session, frames, rounds) {
 function buildProject(session, frames, rounds) {
   return JSON.stringify({
     type: "dsr-tiller-export",
-    version: 4,
+    version: 5,
     session,
     exportedAt: stamp(),
     rounds,
@@ -2185,7 +2313,8 @@ const css = `
 
 
 .mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mode-btn{height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-weight:700;font-size:14px}.mode-btn.on{background:var(--rice);border-color:var(--rice);color:#0c1a08}.mode-btn.harvest.on{background:var(--amber);border-color:var(--amber);color:#241700}.harvest-banner{background:rgba(227,169,47,.12);border:1px solid rgba(227,169,47,.55);border-radius:12px;padding:10px 12px;color:#f3d58f;font-size:12px;line-height:1.5}.harvest-tools{background:rgba(227,169,47,.10);border:1px solid rgba(227,169,47,.45);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:13px}.harvest-tools>div:first-child{display:flex;justify-content:space-between;gap:10px}.sample-count,.sample-tag{color:var(--amber);font-weight:700}.sample-size-block{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.sample-size-label{font-size:12px;color:var(--muted);font-weight:700}.sample-size-row{display:grid!important;grid-template-columns:repeat(6,1fr);gap:5px;flex:1;min-width:220px}.sample-size-btn{height:34px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);font-weight:800}.sample-size-btn.on{background:var(--amber);border-color:var(--amber);color:#241700}.sample-draw-btn{border-color:rgba(227,169,47,.65)!important}.sample-ids{font:11px ui-monospace,monospace;color:#f3d58f;line-height:1.65;word-break:break-word}.random-note{margin-top:-2px!important}.adj-on{border-color:var(--amber)!important;color:var(--amber)!important}.pt-adj{background:#6b7280!important;color:#fff!important;border-style:dashed!important}.pt-sample{box-shadow:0 0 0 4px rgba(227,169,47,.85),0 0 0 7px rgba(0,0,0,.35)!important;background:var(--amber)!important;color:#241700!important;z-index:8}.pt-harvest-numbered{min-width:31px!important;width:auto!important;padding:0 6px!important;overflow:visible!important}.pt-harvest-numbered em{font-size:10px!important;white-space:nowrap}.sample-star{position:absolute;left:-9px;top:-10px;font-style:normal;font-size:13px;color:#ffd76a;text-shadow:0 1px 2px #000;z-index:2}.pt-count-badge{position:absolute;left:50%;top:25px;transform:translateX(-50%);background:#0e1510;border:1px solid var(--rice);color:var(--ink);border-radius:999px;padding:1px 4px;font-size:8px;line-height:1.25;white-space:nowrap;font-weight:800}.pt-sample .pt-count-badge{border-color:var(--amber)}
-.pt-lodged{box-shadow:0 0 0 4px rgba(226,88,74,.85),0 0 0 7px rgba(0,0,0,.32)!important;z-index:7}.lodging-mark{position:absolute;right:-10px;top:-11px;width:22px;height:22px;border-radius:50%;background:var(--danger);border:2px solid #ffd4cf;color:white;font-style:normal;font-size:11px;line-height:18px;text-align:center;font-weight:900;text-shadow:0 1px 1px rgba(0,0,0,.35);z-index:3}.lodging-toggle{width:100%;height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-size:14px;font-weight:800;cursor:pointer}.lodging-toggle.on{border-color:var(--danger);background:rgba(226,88,74,.16);color:#ffb4aa}.lodging-hint{margin:-3px 0 0;font-size:11px;line-height:1.45;color:var(--muted);text-align:center}.prev-lodged{color:var(--danger);font-weight:800}.lodging-toggle:active{transform:scale(.99)}
+.pt-missing{background:rgba(147,167,149,.14)!important;color:var(--muted)!important;border-color:var(--muted)!important;border-style:dashed!important;opacity:.72}.pt-missing em{font-size:9px}.presence-tools{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px}.presence-title{font-size:13px;font-weight:800}.add-on{border-color:var(--rice)!important;color:var(--rice)!important}.restore-block{display:flex;flex-direction:column;gap:6px}.restore-label{font-size:11px;color:var(--muted)}.restore-buttons{display:flex;gap:6px;flex-wrap:wrap}.restore-chip{min-height:34px;padding:5px 9px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--ink);font-size:11px;font-weight:700}.restore-chip.on{border-color:var(--amber);color:var(--amber)}.restore-hint{color:var(--amber)!important}.missing-banner{background:rgba(147,167,149,.12);border:1px dashed var(--muted);border-radius:10px;padding:8px 10px;color:var(--muted);font-size:12px;line-height:1.5}.cs-missing{height:40px;border:1px dashed var(--muted);border-radius:10px;background:transparent;color:var(--muted);padding:0 10px;font-weight:700}.cs-exclude{height:38px;border:0;background:none;color:var(--danger);font-size:12px;text-decoration:underline}.exclude-confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.pt-lodged{border-color:var(--danger)!important;}.lodging-toggle{width:100%;height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-size:14px;font-weight:800;cursor:pointer}.lodging-toggle.on{border-color:var(--danger);background:rgba(226,88,74,.16);color:#ffb4aa}.lodging-hint{margin:-3px 0 0;font-size:11px;line-height:1.45;color:var(--muted);text-align:center}.prev-lodged{color:var(--danger);font-weight:800}.lodging-toggle:active{transform:scale(.99)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}.key:active,.stepper:active{transform:none;}}
 `;
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrorBoundary, null, React.createElement(FrameTillerTool)));</script>
