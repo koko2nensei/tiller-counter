@@ -333,7 +333,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 // ─────────────────────────────────────────────────────────────
 
 const MAIN = "dsr-frames-v1";
-const VERSION = "v22-harvest-continuous-sampling";
+const VERSION = "v23-location-harvest-lodging-mobile";
 const PREP = n => "dsr-frame-prep-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_");
 const MEAS = (n, r) => "dsr-frame-meas-" + String(n).replace(/[^A-Za-z0-9._-]/g, "_") + "-r" + String(r).replace(/[^A-Za-z0-9._-]/g, "_");
 const roundData = (f, r) => f && f.rounds && f.rounds[r] || {
@@ -1212,7 +1212,8 @@ function FrameEditor({
   };
   // 各稲は測定回ごとに存在状態を持つ。
   // present=確認、missing=その回では確認できず。excluded は誤登録として除外。
-  // 位置は「最後に実際に確認できた回」を参照し、missing の回は飛ばす。
+  // 位置は「その株について最後に明示的に修正・確認した位置」を参照する。
+  // 数値を記録しただけの回に位置データが無い場合、準備時位置へ戻さず、さらに前の位置履歴を探す。
   const roundIndex = rid => (rounds || []).findIndex(r => r.id === rid);
   const statusState = (p, rid) => p && p.statuses && p.statuses[rid] ? p.statuses[rid].state : null;
   const pointExistsByRound = (p, rid = round) => {
@@ -1229,16 +1230,14 @@ function FrameEditor({
     for (let i = start; i >= 0; i--) {
       const rid = rounds[i].id;
       if (p.createdRound && roundIndex(p.createdRound) > i) continue;
-      const st = statusState(p, rid);
-      if (st === "missing") continue;
+      if (statusState(p, rid) === "missing") continue;
       const rec = pos[rid];
-      const countedHere = roundData(frame, rid).counts[p.id] != null;
-      if (st === "present" || countedHere || rec) {
-        if (rec && Number.isFinite(rec.u) && Number.isFinite(rec.v)) return rec;
-        if (Number.isFinite(p.u) && Number.isFinite(p.v)) return {u: p.u, v: p.v};
+      if (rec && Number.isFinite(rec.u) && Number.isFinite(rec.v)) {
+        return {u: rec.u, v: rec.v, ts: rec.ts, sourceRound: rid};
       }
     }
-    return Number.isFinite(p.u) && Number.isFinite(p.v) ? {u: p.u, v: p.v} : null;
+    // 位置履歴が一度も無い既存株だけ、準備時の位置を最後のフォールバックとして使う。
+    return Number.isFinite(p.u) && Number.isFinite(p.v) ? {u: p.u, v: p.v, sourceRound: "prep"} : null;
   };
   const hitPoint = (fx, fy, r) => {
     if (!cornersDone) return null;
@@ -1433,7 +1432,7 @@ function FrameEditor({
         ...roundData(f, round).counts,
         [id]: {
           tillers,
-          lodged: roundKind === "harvest" ? false : !!lodged,
+          lodged: !!lodged,
           ts: stamp()
         }
       }
@@ -1446,7 +1445,7 @@ function FrameEditor({
         ...roundData(f, round).counts,
         [id]: {
           tillers,
-          lodged: roundKind === "harvest" ? false : !!lodged,
+          lodged: !!lodged,
           ts: stamp()
         }
       }
@@ -1604,7 +1603,7 @@ function FrameEditor({
     }
   }, roundKind === "harvest" ? "収穫（穂数）" : "計測（分げつ数）")), /*#__PURE__*/React.createElement("div", {
     className: "guide"
-  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整。誤登録はデータを消さず『除外』として残します。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : roundKind === "harvest" ? "各稲の番号は常時表示されます。タップして穂数を記録。★＝不稔率等を調べる採取対象。袋ラベルは点ID（例：14-03）と一致させてください。" : "点をタップ→数字→「記録して次へ」。見つからない株は『今回確認できず』にします。位置は最後に実際に確認できた測定回を参照します。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
+  }, !hasImg ? phase === "prep" ? "枠写真を読み込んでください。" : "同じ枠の最新写真を読み込んでください。" : !cornersDone ? `枠の四隅を順にタップ： ${CORNER_LABELS.map((l, i) => i === corners.length ? `【${l}】` : l).join(" → ")}` : phase === "prep" ? "枠内の稲をタップして追加。点はドラッグで微調整。誤登録はデータを消さず『除外』として残します。" : frame.points.length === 0 ? "準備段階でマークした点がありません。" : roundKind === "harvest" ? "各稲の番号は常時表示されます。タップして穂数と倒伏状態を記録。★＝不稔率等を調べる採取対象。袋ラベルは点ID（例：14-03）と一致させてください。" : "点をタップ→数字→「記録して次へ」。見つからない株は『今回確認できず』にします。位置は最後に実際に確認できた測定回を参照します。"), phase === "meas" && frame.prepCorners.length !== 4 && /*#__PURE__*/React.createElement("div", {
     className: "warn"
   }, "準備段階の四隅が未設定です。まず「準備」で四隅と稲位置を登録してください。"), phase === "meas" && /*#__PURE__*/React.createElement("div", {
     className: "presence-tools"
@@ -1699,7 +1698,7 @@ function FrameEditor({
     if (phase === "meas" && currentPresence === "missing") { cls = " pt-missing"; label = fixedPlantLabel; }
     const isHarvestSample = roundKind === "harvest" && harvestSet.has(p.id);
     const harvestCount = roundKind === "harvest" && isCounted ? rd.counts[p.id].tillers : null;
-    const isLodged = roundKind !== "harvest" && isCounted && !!rd.counts[p.id].lodged;
+    const isLodged = isCounted && !!rd.counts[p.id].lodged;
     return /*#__PURE__*/React.createElement("span", {
       key: p.id,
       className: "pt" + cls + (isSel ? " pt-sel" : "") + (isHarvestSample ? " pt-sample" : "") + (isLodged ? " pt-lodged" : "") + (roundKind === "harvest" ? " pt-harvest-numbered" : ""),
@@ -1760,7 +1759,7 @@ function FrameEditor({
     prev: prevInfo(selPoint.id),
     initialMissing: statusState(selPoint, round) === "missing",
     unitLabel: roundKind === "harvest" ? "穂" : "分げつ",
-    showLodging: roundKind !== "harvest",
+    showLodging: true,
     isSample: roundKind === "harvest" && harvestSet.has(selPoint.id),
     onSaveNext: (v, lodged) => saveAndNext(selPoint.id, v, lodged),
     onSaveClose: (v, lodged) => {
@@ -1794,6 +1793,7 @@ function CounterSheet({
   const [v, setV] = useState(initial);
   const [lodged, setLodged] = useState(!!initialLodged);
   const [confirmExclude, setConfirmExclude] = useState(false);
+  const [showStateActions, setShowStateActions] = useState(false);
   const digit = d => setV(x => Math.min(MAX_TILLERS, x * 10 + d));
   return /*#__PURE__*/React.createElement("div", {
     className: "sheet counter-sheet",
@@ -1813,7 +1813,7 @@ function CounterSheet({
     className: "lodging-toggle" + (lodged ? " on" : ""),
     onClick: () => setLodged(x => !x),
     "aria-pressed": lodged
-  }, lodged ? "⚠ 倒伏あり ✓" : "倒伏なし（タップで倒伏にする）"), showLodging && /*#__PURE__*/React.createElement("p", {className:"lodging-hint"}, "倒伏を記録しても、下で分げつ数を通常どおり数えてください。"), /*#__PURE__*/React.createElement("div", {
+  }, lodged ? "⚠ 倒伏あり ✓" : "倒伏なし（タップで倒伏にする）"), showLodging && /*#__PURE__*/React.createElement("p", {className:"lodging-hint"}, unitLabel === "穂" ? "倒伏を記録しても、下で穂数を通常どおり数えてください。" : "倒伏を記録しても、下で分げつ数を通常どおり数えてください。"), /*#__PURE__*/React.createElement("div", {
     className: "cs-counter"
   }, /*#__PURE__*/React.createElement("button", {
     className: "stepper minus",
@@ -1853,9 +1853,13 @@ function CounterSheet({
     className: "btn-ghost sm",
     onClick: () => onSaveClose(v, lodged)
   }, "記録して閉じる"), /*#__PURE__*/React.createElement("button", {
+    className: "cs-state-toggle",
+    onClick: () => { setShowStateActions(x => !x); setConfirmExclude(false); },
+    "aria-expanded": showStateActions
+  }, showStateActions ? "個体状態を閉じる ▲" : "見つからない・誤登録の場合 ▼")), showStateActions && /*#__PURE__*/React.createElement("div", {className:"cs-state-panel"}, /*#__PURE__*/React.createElement("button", {
     className: "cs-missing",
     onClick: onMissing
-  }, "今回は確認できず")), confirmExclude ? /*#__PURE__*/React.createElement("div", {
+  }, "今回は確認できず"), confirmExclude ? /*#__PURE__*/React.createElement("div", {
     className: "cs-del-confirm exclude-confirm"
   }, "誤登録として除外しますか？過去の記録は消えません。", /*#__PURE__*/React.createElement("button", {
     className: "link-danger",
@@ -1866,7 +1870,7 @@ function CounterSheet({
   }, "やめる")) : /*#__PURE__*/React.createElement("button", {
     className: "cs-exclude",
     onClick: () => setConfirmExclude(true)
-  }, "誤登録として除外"));
+  }, "誤登録として除外")));
 }
 
 // ── DATA ─────────────────────────────────────────────────────
@@ -2011,7 +2015,7 @@ function DataView({
   }, importMsg)), exportOpen && /*#__PURE__*/React.createElement(ExportModal, {
     text: buildCsv(session, frames, rounds),
     title: "CSV書き出し（全測定回）",
-    note: "列: session, frame, point_id, u, v, round, round_label, measure_type, count, unit, lodging, quality_sample, adjacent_plant, recorded_at。通常回は分げつ数と倒伏状態、収穫回は穂数・採取対象・枠隣接株フラグを出力。",
+    note: "列: session, frame, point_id, u, v, round, round_label, measure_type, presence_state, count, unit, lodging, quality_sample, adjacent_plant, created_round, excluded, recorded_at。通常回・収穫回とも倒伏状態を出力。",
     filename: `tiller_${today()}.csv`,
     mime: "text/csv",
     onClose: () => setExportOpen(false)
@@ -2123,7 +2127,7 @@ function buildCsv(session, frames, rounds) {
         rid, rlabel[rid] || rid, kind, presence,
         rec ? rec.tillers : "",
         kind === "harvest" ? "panicles" : "tillers",
-        rec && kind !== "harvest" ? (rec.lodged ? 1 : 0) : "",
+        rec ? (rec.lodged ? 1 : 0) : "",
         (f.harvestSamples || []).includes(p.id) ? 1 : 0,
         p.adjacent ? 1 : 0,
         p.createdRound || "",
@@ -2285,7 +2289,7 @@ const css = `
 .key:active{transform:scale(.96);background:var(--panel2);}
 .key-fn{color:var(--muted);font-size:20px;}
 
-.sheet{position:fixed;left:0;right:0;bottom:0;margin:0 auto;max-width:480px;max-height:92vh;overflow-y:auto;background:var(--bg);border-top:1px solid var(--line);border-radius:18px 18px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom));z-index:60;box-shadow:0 -10px 30px rgba(0,0,0,.4);}
+.sheet{position:fixed;left:0;right:0;bottom:0;margin:0 auto;max-width:480px;max-height:calc(100dvh - 8px);overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y;background:var(--bg);border-top:1px solid var(--line);border-radius:18px 18px 0 0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));z-index:60;box-shadow:0 -10px 30px rgba(0,0,0,.4);}
 .sheet-row{display:flex;align-items:center;justify-content:space-between;}
 .sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
 .sheet-id{font-weight:700;font-variant-numeric:tabular-nums;}
@@ -2340,6 +2344,9 @@ const css = `
 
 .mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mode-btn{height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-weight:700;font-size:14px}.mode-btn.on{background:var(--rice);border-color:var(--rice);color:#0c1a08}.mode-btn.harvest.on{background:var(--amber);border-color:var(--amber);color:#241700}.harvest-banner{background:rgba(227,169,47,.12);border:1px solid rgba(227,169,47,.55);border-radius:12px;padding:10px 12px;color:#f3d58f;font-size:12px;line-height:1.5}.harvest-tools{background:rgba(227,169,47,.10);border:1px solid rgba(227,169,47,.45);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:13px}.harvest-tools>div:first-child{display:flex;justify-content:space-between;gap:10px}.sample-count,.sample-tag{color:var(--amber);font-weight:700}.sample-size-block{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.sample-size-label{font-size:12px;color:var(--muted);font-weight:700}.sample-size-row{display:grid!important;grid-template-columns:repeat(6,1fr);gap:5px;flex:1;min-width:220px}.sample-size-btn{height:34px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);font-weight:800}.sample-size-btn.on{background:var(--amber);border-color:var(--amber);color:#241700}.sample-draw-btn{border-color:rgba(227,169,47,.65)!important}.sample-ids{font:11px ui-monospace,monospace;color:#f3d58f;line-height:1.65;word-break:break-word}.random-note{margin-top:-2px!important}.sample-eligibility{font-size:12px;color:var(--muted);line-height:1.5}.sample-eligibility b{color:var(--amber);font-size:14px}.adj-on{border-color:var(--amber)!important;color:var(--amber)!important}.pt-adj{background:#6b7280!important;color:#fff!important;border-style:dashed!important}.pt-sample{box-shadow:0 0 0 4px rgba(227,169,47,.85),0 0 0 7px rgba(0,0,0,.35)!important;background:var(--amber)!important;color:#241700!important;z-index:8}.pt-harvest-numbered{min-width:31px!important;width:auto!important;padding:0 6px!important;overflow:visible!important}.pt-harvest-numbered em{font-size:10px!important;white-space:nowrap}.sample-star{position:absolute;left:-9px;top:-10px;font-style:normal;font-size:13px;color:#ffd76a;text-shadow:0 1px 2px #000;z-index:2}.pt-count-badge{position:absolute;left:50%;top:25px;transform:translateX(-50%);background:#0e1510;border:1px solid var(--rice);color:var(--ink);border-radius:999px;padding:1px 4px;font-size:8px;line-height:1.25;white-space:nowrap;font-weight:800}.pt-sample .pt-count-badge{border-color:var(--amber)}
 .pt-missing{background:rgba(147,167,149,.14)!important;color:var(--muted)!important;border-color:var(--muted)!important;border-style:dashed!important;opacity:.72}.pt-missing em{font-size:9px}.presence-tools{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px}.presence-title{font-size:13px;font-weight:800}.add-on{border-color:var(--rice)!important;color:var(--rice)!important}.restore-block{display:flex;flex-direction:column;gap:6px}.restore-label{font-size:11px;color:var(--muted)}.restore-buttons{display:flex;gap:6px;flex-wrap:wrap}.restore-chip{min-height:34px;padding:5px 9px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--ink);font-size:11px;font-weight:700}.restore-chip.on{border-color:var(--amber);color:var(--amber)}.restore-hint{color:var(--amber)!important}.missing-banner{background:rgba(147,167,149,.12);border:1px dashed var(--muted);border-radius:10px;padding:8px 10px;color:var(--muted);font-size:12px;line-height:1.5}.cs-missing{height:40px;border:1px dashed var(--muted);border-radius:10px;background:transparent;color:var(--muted);padding:0 10px;font-weight:700}.cs-exclude{height:38px;border:0;background:none;color:var(--danger);font-size:12px;text-decoration:underline}.exclude-confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.cs-state-toggle{height:40px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--muted);padding:0 10px;font-size:12px;font-weight:700;white-space:nowrap;flex:1}.cs-state-panel{display:flex;flex-direction:column;gap:8px;padding:8px;border:1px solid var(--line);border-radius:10px;background:rgba(30,42,32,.55)}
+@media (max-height:720px){.counter-sheet{gap:7px}.counter-sheet .sheet-head{margin-bottom:2px}.counter-sheet .keypad.sm .key{height:40px}.counter-sheet .cs-counter{gap:7px}.counter-sheet .count-num{font-size:38px}.counter-sheet .lodging-hint{display:none}.counter-sheet .cs-prev{padding:4px}.counter-sheet .missing-banner{padding:5px 8px}}
+
 .pt-lodged{border-color:var(--danger)!important;}.lodging-toggle{width:100%;height:44px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-size:14px;font-weight:800;cursor:pointer}.lodging-toggle.on{border-color:var(--danger);background:rgba(226,88,74,.16);color:#ffb4aa}.lodging-hint{margin:-3px 0 0;font-size:11px;line-height:1.45;color:var(--muted);text-align:center}.prev-lodged{color:var(--danger);font-weight:800}.lodging-toggle:active{transform:scale(.99)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}.key:active,.stepper:active{transform:none;}}
 `;
